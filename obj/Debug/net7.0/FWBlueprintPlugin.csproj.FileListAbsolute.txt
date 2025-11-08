@@ -1,0 +1,14 @@
+C:\Users\asher\Desktop\FWBlueprintPlugin\bin\Debug\net7.0\FWBlueprintPlugin.deps.json
+C:\Users\asher\Desktop\FWBlueprintPlugin\bin\Debug\net7.0\FWBlueprintPlugin.runtimeconfig.json
+C:\Users\asher\Desktop\FWBlueprintPlugin\bin\Debug\net7.0\FWBlueprintPlugin.rhp
+C:\Users\asher\Desktop\FWBlueprintPlugin\bin\Debug\net7.0\FWBlueprintPlugin.pdb
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.csproj.AssemblyReference.cache
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.AssemblyInfoInputs.cache
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.AssemblyInfo.cs
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.csproj.CoreCompileInputs.cache
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.rhp
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\refint\FWBlueprintPlugin.rhp
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.pdb
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.genruntimeconfig.cache
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\ref\FWBlueprintPlugin.rhp

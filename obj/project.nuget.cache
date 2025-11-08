@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "dgSpecHash": "1KU0jkMqfsU=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\asher\\Desktop\\FWBlueprintPlugin\\FWBlueprintPlugin.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\asher\\.nuget\\packages\\microsoft.win32.systemevents\\7.0.0\\microsoft.win32.systemevents.7.0.0.nupkg.sha512",
+    "C:\\Users\\asher\\.nuget\\packages\\rhinocommon\\8.24.25281.15001\\rhinocommon.8.24.25281.15001.nupkg.sha512",
+    "C:\\Users\\asher\\.nuget\\packages\\system.drawing.common\\7.0.0\\system.drawing.common.7.0.0.nupkg.sha512",
+    "C:\\Users\\asher\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\7.0.20\\microsoft.windowsdesktop.app.ref.7.0.20.nupkg.sha512",
+    "C:\\Users\\asher\\.nuget\\packages\\microsoft.netcore.app.ref\\7.0.20\\microsoft.netcore.app.ref.7.0.20.nupkg.sha512",
+    "C:\\Users\\asher\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\7.0.20\\microsoft.aspnetcore.app.ref.7.0.20.nupkg.sha512"
+  ],
+  "logs": []
+}

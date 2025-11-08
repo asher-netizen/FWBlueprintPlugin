@@ -1,0 +1,20 @@
+{
+  "profiles": {
+    "Rhino 8 - netcore": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Program Files\\Rhino 8\\System\\Rhino.exe",
+      "commandLineArgs": "/runscript=\"_Open \\\"C:\\Users\\asher\\OneDrive\\Documents\\Frailey Woodworks\\03 Rhino Files\\03 - Standard Projects\\01 Record Consoles and Sideboards\\FW - The Crosby.3dm\\\"\"",
+      "environmentVariables": {
+        "RHINO_PACKAGE_DIRS": "$(ProjectDir)$(OutputPath)\\"
+      }
+    },
+    "Rhino 8 - netfx": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Program Files\\Rhino 8\\System\\Rhino.exe",
+      "commandLineArgs": "/netfx",
+      "environmentVariables": {
+        "RHINO_PACKAGE_DIRS": "$(ProjectDir)$(OutputPath)\\"
+      }
+    }
+  }
+}
