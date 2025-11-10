@@ -38,28 +38,52 @@ namespace FWBlueprintPlugin.Services
 
             foreach (var group in groupedByEdge)
             {
-                var edgeFeatures = group.OrderBy(f => f.StartPos).ToList();
                 string edgeName = group.Key;
+                var orderedFeatures = group.OrderBy(f => f.StartPos).ToList();
 
-                RhinoApp.WriteLine($"\n[{edgeName}] Dimensioning {edgeFeatures.Count} feature(s)...");
+                RhinoApp.WriteLine($"[{edgeName}] {orderedFeatures.Count} feature(s)");
+                foreach (var feature in orderedFeatures)
+                {
+                    RhinoApp.WriteLine(
+                        $"    • {feature.Type} | start={feature.StartPos:F3}\" end={feature.EndPos:F3}\" width={feature.Width:F3}\" depth={feature.Depth:F3}\" curved={feature.HasCurvature}");
+                }
+
+                RhinoApp.WriteLine($"\n[{edgeName}] Dimensioning {orderedFeatures.Count} feature(s)...");
 
                 var (edgeStart, edgeEnd, edgeDirection, perpendicular) = GetEdgeParameters(panelBBox, edgeName);
                 double edgeLength = edgeStart.DistanceTo(edgeEnd);
 
-                bool hasHoles = edgeFeatures.Any(f => f.Type == "Edge Hole");
-                bool hasSlots = edgeFeatures.Any(f => f.Type == "Edge Slot");
+                var notchFeatures = orderedFeatures.Where(IsNotchFeature).ToList();
+                var nonNotchFeatures = orderedFeatures.Where(f => !IsNotchFeature(f)).ToList();
+                var holeFeatures = nonNotchFeatures.Where(IsHoleFeature).ToList();
+                var slotFeatures = nonNotchFeatures.Where(IsSlotFeature).ToList();
 
-                if (hasHoles && !hasSlots)
+                if (nonNotchFeatures.Count > 0)
                 {
-                    AddEdgeHoleDimensions(panelBBox, edgeFeatures, edgeName, edgeLength, dimensionsLayerIndex);
+                    bool hasHoles = holeFeatures.Count > 0;
+                    bool hasSlots = slotFeatures.Count > 0;
+
+                    if (hasHoles && !hasSlots)
+                    {
+                        AddEdgeHoleDimensions(panelBBox, holeFeatures, edgeName, edgeLength, dimensionsLayerIndex);
+                    }
+                    else if (hasSlots && !hasHoles)
+                    {
+                        AddEdgeSlotDimensions(panelBBox, slotFeatures, edgeName, edgeLength, dimensionsLayerIndex);
+                    }
+                    else if (hasSlots && hasHoles)
+                    {
+                        AddMixedEdgeDimensions(panelBBox, nonNotchFeatures, edgeName, edgeLength, dimensionsLayerIndex);
+                    }
+                    else
+                    {
+                        AddEdgeHoleDimensions(panelBBox, nonNotchFeatures, edgeName, edgeLength, dimensionsLayerIndex);
+                    }
                 }
-                else if (hasSlots && !hasHoles)
+
+                if (notchFeatures.Count > 0)
                 {
-                    AddEdgeSlotDimensions(panelBBox, edgeFeatures, edgeName, edgeLength, dimensionsLayerIndex);
-                }
-                else
-                {
-                    AddMixedEdgeDimensions(panelBBox, edgeFeatures, edgeName, edgeLength, dimensionsLayerIndex);
+                    AddEdgeNotchDimensions(panelBBox, notchFeatures, edgeName, edgeLength, dimensionsLayerIndex);
                 }
             }
 
@@ -99,7 +123,7 @@ namespace FWBlueprintPlugin.Services
 
         private void AddEdgeSlotDimensions(Rectangle3d bbox, IList<EdgeFeature> slots, string edgeName, double edgeLength, int dimensionsLayerIndex)
         {
-            RhinoApp.WriteLine("  Strategy: Edge Slots (running cumulative, offset away from panel)");
+            RhinoApp.WriteLine("  Strategy: Edge Slots/Notches (running cumulative, offset away from panel)");
 
             var (edgeStart, _, edgeDirection, perpendicular) = GetEdgeParameters(bbox, edgeName);
             perpendicular = -perpendicular;
@@ -138,7 +162,7 @@ namespace FWBlueprintPlugin.Services
         {
             RhinoApp.WriteLine("  Strategy: Mixed (holes + slots, running cumulative, offset away from panel)");
 
-            bool hasSlots = features.Any(f => f.Type == "Edge Slot");
+            bool hasSlots = features.Any(IsSlotFeature);
             if (!hasSlots)
             {
                 RhinoApp.WriteLine("  ⚠ Correcting: Only holes detected, using hole-only strategy");
@@ -155,14 +179,14 @@ namespace FWBlueprintPlugin.Services
 
             foreach (var feature in features)
             {
-                if (feature.Type == "Edge Hole")
+                if (IsHoleFeature(feature))
                 {
                     double distanceToCenter = feature.CenterPos - currentPos;
                     segments.Add(distanceToCenter);
                     segmentLabels.Add($"→Hole center: {FormatDimension(distanceToCenter, 5)}");
                     currentPos = feature.CenterPos;
                 }
-                else
+                else if (IsSlotFeature(feature))
                 {
                     if (feature.StartPos > currentPos)
                     {
@@ -243,6 +267,117 @@ namespace FWBlueprintPlugin.Services
 
                 cumulativeDistance += segmentLength;
             }
+        }
+
+        private void AddEdgeNotchDimensions(Rectangle3d bbox, IList<EdgeFeature> notches, string edgeName, double edgeLength, int dimensionsLayerIndex)
+        {
+            RhinoApp.WriteLine("  Strategy: Edge Notches (individual width/depth + nearest corner)");
+
+            var (edgeStart, edgeEnd, edgeDirection, perpendicular) = GetEdgeParameters(bbox, edgeName);
+            var dimStyle = _doc.DimStyles.FindName("Furniture Dim - CG") ?? _doc.DimStyles.Current;
+            var attr = new ObjectAttributes
+            {
+                LayerIndex = dimensionsLayerIndex,
+                ColorSource = ObjectColorSource.ColorFromObject,
+                ObjectColor = Color.FromArgb(255, 0, 0)
+            };
+
+            var orderedNotches = notches.OrderBy(n => n.StartPos).ToList();
+            double cornerTolerance = 0.01;
+            double dimOffset = 3.0;
+
+            foreach (var notch in orderedNotches)
+            {
+                Point3d startPt = edgeStart + edgeDirection * notch.StartPos;
+                Point3d endPt = edgeStart + edgeDirection * notch.EndPos;
+                Point3d midPt = edgeStart + edgeDirection * (notch.StartPos + notch.Width / 2.0);
+
+                Point3d dimLinePointWidth = (startPt + endPt) / 2.0 + (-perpendicular) * dimOffset;
+                AddLinearDimension(edgeName, edgeDirection, startPt, endPt, dimLinePointWidth, dimStyle, attr);
+
+                Vector3d depthDir = perpendicular;
+                Point3d depthEnd = midPt + depthDir * notch.Depth;
+                Point3d depthDimPoint = (midPt + depthEnd) / 2.0 + (-perpendicular) * dimOffset;
+                AddPerpendicularDimension(depthDir, midPt, depthEnd, depthDimPoint, dimStyle, attr);
+
+                double startDistance = notch.StartPos;
+                double endDistance = edgeLength - notch.EndPos;
+                bool touchesLeftCorner = startDistance < cornerTolerance;
+                bool touchesRightCorner = endDistance < cornerTolerance;
+
+                if (!touchesLeftCorner && !touchesRightCorner)
+                {
+                    bool nearerLeft = startDistance <= endDistance;
+                    Point3d cornerPt = nearerLeft ? edgeStart : edgeEnd;
+                    Point3d notchEdgePt = nearerLeft ? startPt : endPt;
+                    Point3d cornerDimPoint = (cornerPt + notchEdgePt) / 2.0 + (-perpendicular) * dimOffset;
+                    AddLinearDimension(edgeName, edgeDirection, cornerPt, notchEdgePt, cornerDimPoint, dimStyle, attr);
+                }
+            }
+        }
+
+        private void AddLinearDimension(string edgeName, Vector3d edgeDirection, Point3d pt1, Point3d pt2, Point3d dimLinePoint, DimensionStyle dimStyle, ObjectAttributes attr)
+        {
+            double dimZ = pt1.Z + 0.01;
+            var dimPlane = new Plane(new Point3d(0, 0, dimZ), Vector3d.ZAxis);
+            bool isVertical = edgeName.Equals("LEFT", StringComparison.OrdinalIgnoreCase) || edgeName.Equals("RIGHT", StringComparison.OrdinalIgnoreCase);
+
+            LinearDimension dim = isVertical
+                ? LinearDimension.Create(AnnotationType.Rotated, dimStyle, dimPlane, Vector3d.XAxis, pt1, pt2, dimLinePoint, Math.PI / 2.0)
+                : LinearDimension.Create(AnnotationType.Aligned, dimStyle, dimPlane, edgeDirection, pt1, pt2, dimLinePoint, 0);
+
+            if (dim != null)
+            {
+                _doc.Objects.AddLinearDimension(dim, attr);
+            }
+        }
+
+        private void AddPerpendicularDimension(Vector3d measurementDirection, Point3d pt1, Point3d pt2, Point3d dimLinePoint, DimensionStyle dimStyle, ObjectAttributes attr)
+        {
+            double dimZ = pt1.Z + 0.01;
+            var dimPlane = new Plane(new Point3d(0, 0, dimZ), Vector3d.ZAxis);
+            Vector3d axis = Math.Abs(measurementDirection.Y) > Math.Abs(measurementDirection.X) ? Vector3d.YAxis : Vector3d.XAxis;
+
+            LinearDimension dim = LinearDimension.Create(AnnotationType.Aligned, dimStyle, dimPlane, axis, pt1, pt2, dimLinePoint, 0);
+
+            if (dim != null)
+            {
+                _doc.Objects.AddLinearDimension(dim, attr);
+            }
+        }
+
+        private static bool IsHoleFeature(EdgeFeature feature)
+        {
+            if (feature?.Type == null)
+            {
+                return false;
+            }
+
+            return feature.Type.Equals("Edge Hole", StringComparison.OrdinalIgnoreCase) ||
+                   feature.Type.Equals("EdgeCordHole", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsSlotFeature(EdgeFeature feature)
+        {
+            if (feature?.Type == null)
+            {
+                return false;
+            }
+
+            return feature.Type.Equals("Edge Slot", StringComparison.OrdinalIgnoreCase) ||
+                   feature.Type.Equals("EdgeCordSlot", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsNotchFeature(EdgeFeature feature)
+        {
+            if (feature?.Type == null)
+            {
+                return false;
+            }
+
+            return feature.Type.Equals("Edge Notch", StringComparison.OrdinalIgnoreCase) ||
+                   feature.Type.Equals("EdgeNotch", StringComparison.OrdinalIgnoreCase) ||
+                   feature.Type.Equals("CornerNotch", StringComparison.OrdinalIgnoreCase);
         }
 
         private static (Point3d Start, Point3d End, Vector3d Direction, Vector3d Perpendicular) GetEdgeParameters(Rectangle3d bbox, string edgeName)

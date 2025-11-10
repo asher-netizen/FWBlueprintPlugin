@@ -1,19 +1,24 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using Rhino;
 using Rhino.Geometry;
-using Rhino.Geometry.Intersect;
 using FWBlueprintPlugin;
 using FWBlueprintPlugin.Services;
 
 namespace FWBlueprintPlugin.Services.Phase3
 {
     /// <summary>
-    /// Detects edge features along panel boundaries and routes the data to edge dimensioning.
+    /// Edge detection entry point for the Version 2 scanner. Legacy version 1 lives in <see cref="EdgeFeatureDetectionServiceV1"/>.
     /// </summary>
     internal class EdgeFeatureDetectionService
     {
         private readonly EdgeDimensioningService _edgeDimensioningService;
+        private const double HoleWidthThreshold = 2.0625;
+        private const double RoundingIncrement = 1.0 / 16.0;
+        private const double MinimumFeatureWidth = 0.1;
+        private const double MinimumFeatureDepth = 0.05;
 
         public EdgeFeatureDetectionService(EdgeDimensioningService edgeDimensioningService)
         {
@@ -25,438 +30,508 @@ namespace FWBlueprintPlugin.Services.Phase3
             Curve panelBoundary,
             EdgeSegmentData segmentData,
             Brep panelBrep,
+            double panelThickness,
             double tol,
-            int dimensionsLayerIndex)
+            int dimensionsLayerIndex,
+            string panelDisplayName)
         {
-            if (segmentData == null)
+            _ = dimensionsLayerIndex;
+            _ = panelBoundary;
+
+            if (!bbox.IsValid || panelBoundary == null || segmentData == null || panelBrep == null)
             {
+                RhinoApp.WriteLine($"[Edge Detection v2] Panel '{panelDisplayName}' missing geometry inputs; skipping.");
                 return new List<EdgeFeature>();
             }
 
-            _ = panelBrep; // Unused in ray protocol implementation but kept for compatibility
-            _ = tol;
-
-            var allEdgeFeatures = new List<EdgeFeature>();
-
-            allEdgeFeatures.AddRange(ProcessEdge_RayProtocol(bbox, panelBoundary, segmentData.BottomSegments, "BOTTOM"));
-            allEdgeFeatures.AddRange(ProcessEdge_RayProtocol(bbox, panelBoundary, segmentData.RightSegments, "RIGHT"));
-            allEdgeFeatures.AddRange(ProcessEdge_RayProtocol(bbox, panelBoundary, segmentData.TopSegments, "TOP"));
-            allEdgeFeatures.AddRange(ProcessEdge_RayProtocol(bbox, panelBoundary, segmentData.LeftSegments, "LEFT"));
-
-            if (allEdgeFeatures.Count > 0)
+            var panelBrepBox = panelBrep.GetBoundingBox(true);
+            double brepThickness = panelBrepBox.IsValid ? panelBrepBox.Max.Z - panelBrepBox.Min.Z : 0.0;
+            double effectiveThickness = panelThickness > 0 ? panelThickness : brepThickness;
+            if (effectiveThickness <= 0 && brepThickness > 0)
             {
-                _edgeDimensioningService.AddEdgeFeatureDimensions(bbox, allEdgeFeatures, dimensionsLayerIndex);
+                effectiveThickness = brepThickness;
             }
 
-            return allEdgeFeatures;
-        }
+            var analyzer = new EdgeDetectionV2Analyzer(
+                bbox,
+                panelBrep,
+                panelBrepBox,
+                effectiveThickness,
+                tol);
 
-        private List<EdgeFeature> ProcessEdge_RayProtocol(
-            Rectangle3d bbox,
-            Curve panelBoundary,
-            List<(Curve seg, int index)> segments,
-            string edgeName)
-        {
-            var detectedFeatures = new List<EdgeFeature>();
-            if (segments == null || segments.Count <= 1)
+            var summaries = analyzer.Analyze(segmentData);
+
+            foreach (var summary in summaries)
             {
-                return detectedFeatures;
+                LogEdgeSummary(summary, panelDisplayName);
             }
 
-            bool isHorizontal = edgeName == "BOTTOM" || edgeName == "TOP";
-            segments.Sort((a, b) =>
+            var detectedFeatures = summaries.SelectMany(s => s.Cutouts).ToList();
+
+            if (detectedFeatures.Count == 0)
             {
-                Point3d midA = a.seg.PointAt(a.seg.Domain.Mid);
-                Point3d midB = b.seg.PointAt(b.seg.Domain.Mid);
-                return isHorizontal ? midA.X.CompareTo(midB.X) : midA.Y.CompareTo(midB.Y);
-            });
-
-            GetEdgeParameters(bbox, edgeName, out Point3d edgeStart, out Point3d edgeEnd, out Vector3d edgeDirection, out Vector3d perpendicular);
-
-            double edgeLength = edgeStart.DistanceTo(edgeEnd);
-            const double baselineDepth = 0.001;
-
-            RhinoApp.WriteLine($"  [DEBUG] [{edgeName}] Edge length: {edgeLength:F2}\", Segments: {segments.Count}");
-            if (edgeLength > 1000)
-            {
-                RhinoApp.WriteLine($"  [DEBUG] ⚠️ WARNING: Edge length exceeds 1000\" - possible geometry issue!");
+                RhinoApp.WriteLine($"[Edge Detection v2] Panel '{panelDisplayName}' produced no through edge cutouts.");
             }
-
-            double currentPos = 0.0;
-            int segmentIndex = 0;
-
-            while (segmentIndex < segments.Count - 1)
+            else
             {
-                var (seg, _) = segments[segmentIndex];
-                double segLength = GetSegmentLengthAlongEdge(seg, edgeStart, edgeDirection, isHorizontal);
-
-                RhinoApp.WriteLine($"  [DEBUG] Seg {segmentIndex}: Length={segLength:F2}\", Pos={currentPos:F2}\" → {currentPos + segLength:F2}\"");
-
-                double boundaryPos = currentPos + segLength;
-
-                Point3d rayPoint1 = edgeStart + edgeDirection * (boundaryPos - 0.01);
-                double nextSegLength = 0.25;
-                if (segmentIndex + 1 < segments.Count)
-                {
-                    var (nextSeg, _) = segments[segmentIndex + 1];
-                    nextSegLength = GetSegmentLengthAlongEdge(nextSeg, edgeStart, edgeDirection, isHorizontal);
-                }
-
-                Point3d rayPoint2 = edgeStart + edgeDirection * (boundaryPos + Math.Max(0.5, nextSegLength / 2));
-
-                double depth1 = ShootRayDepth(rayPoint1, perpendicular, panelBoundary);
-                double depth2 = ShootRayDepth(rayPoint2, perpendicular, panelBoundary);
-
-                RhinoApp.WriteLine($"    [RAY] At boundary {boundaryPos:F3}\": depth1={depth1:F3}\", depth2={depth2:F3}\", baseline={baselineDepth:F3}\"");
-
-                if (System.Math.Abs(depth1 - baselineDepth) < 0.1 && depth2 > baselineDepth + 0.1)
-                {
-                    var result = ResolveForwardCutout(
-                        segments,
-                        edgeStart,
-                        edgeDirection,
-                        perpendicular,
-                        edgeLength,
-                        boundaryPos,
-                        segLength,
-                        depth2,
-                        segmentIndex,
-                        isHorizontal,
-                        panelBoundary,
-                        edgeName,
-                        currentPos);
-
-                    if (result != null)
-                    {
-                        detectedFeatures.Add(result.Value.Feature);
-                        segmentIndex = result.Value.NextSegmentIndex;
-                        currentPos = result.Value.NextPosition;
-                        continue;
-                    }
-                }
-                else if (depth1 > baselineDepth + 0.1 && depth2 > baselineDepth + 0.1 && segmentIndex > 0)
-                {
-                    var result = ResolveInsetCutout(
-                        segments,
-                        edgeStart,
-                        edgeDirection,
-                        perpendicular,
-                        edgeLength,
-                        boundaryPos,
-                        segLength,
-                        depth1,
-                        depth2,
-                        segmentIndex,
-                        isHorizontal,
-                        panelBoundary,
-                        edgeName);
-
-                    if (result != null)
-                    {
-                        detectedFeatures.Add(result.Value.Feature);
-                        segmentIndex = result.Value.NextSegmentIndex;
-                        currentPos = result.Value.NextPosition;
-                        continue;
-                    }
-                }
-
-                currentPos = boundaryPos;
-                segmentIndex++;
+                _edgeDimensioningService.AddEdgeFeatureDimensions(bbox, detectedFeatures, dimensionsLayerIndex);
             }
 
             return detectedFeatures;
         }
 
-        private (EdgeFeature Feature, int NextSegmentIndex, double NextPosition)? ResolveForwardCutout(
-            List<(Curve seg, int index)> segments,
-            Point3d edgeStart,
-            Vector3d edgeDirection,
-            Vector3d perpendicular,
-            double edgeLength,
-            double boundaryPos,
-            double segLength,
-            double initialDepth,
-            int segmentIndex,
-            bool isHorizontal,
-            Curve panelBoundary,
-            string edgeName,
-            double currentPos)
+        private static void LogEdgeSummary(EdgeCutoutSummary summary, string panelDisplayName)
         {
-            const double baselineDepth = 0.001;
-            const double scanInterval = 0.03;
-            double scanPos = boundaryPos;
-            double maxDepth = initialDepth;
-            double prevScanPos = scanPos;
+            string panelLabel = string.IsNullOrWhiteSpace(panelDisplayName) ? "Unnamed Panel" : panelDisplayName;
+            string edgeHeader = $"Panel '{panelLabel}' Edge: {summary.EdgeName}";
+            string totalLength = $"{summary.TotalLength:F3}\"";
 
-            while (scanPos < edgeLength)
-            {
-                scanPos += scanInterval;
-                Point3d scanRayPoint = edgeStart + edgeDirection * scanPos;
-                double scanDepth = ShootRayDepth(scanRayPoint, perpendicular, panelBoundary);
+            string cutoutsText = summary.Cutouts.Count == 0
+                ? "[]"
+                : "[" + string.Join(", ", summary.Cutouts.Select(f =>
+                    FormattableString.Invariant($"{{Type: {f.Type}, Width: {f.Width:F3}, Depth: {f.Depth:F3}, Start: {f.StartPos:F3}}}"))) + "]";
 
-                maxDepth = System.Math.Max(maxDepth, scanDepth);
+            string gapText = summary.Gaps.Count == 0
+                ? "[]"
+                : "[" + string.Join(", ", summary.Gaps.Select(g => g.ToString("F3", CultureInfo.InvariantCulture))) + "]";
 
-                if (System.Math.Abs(scanDepth - baselineDepth) < 0.1)
-                {
-                    scanPos = prevScanPos;
-                    break;
-                }
-
-                prevScanPos = scanPos;
-            }
-
-            scanPos = System.Math.Round(scanPos * 16.0) / 16.0;
-
-            var cutoutSegments = new List<int>();
-            double cutoutSegmentLength = 0.0;
-
-            for (int i = segmentIndex + 1; i < segments.Count; i++)
-            {
-                var (cutSeg, _) = segments[i];
-                double cutSegLength = GetSegmentLengthAlongEdge(cutSeg, edgeStart, edgeDirection, isHorizontal);
-                double cutSegEnd = currentPos + segLength + cutoutSegmentLength + cutSegLength;
-
-                if (cutSegEnd <= scanPos + 0.01)
-                {
-                    cutoutSegments.Add(i + 1);
-                    cutoutSegmentLength += cutSegLength;
-                    segLength += cutSegLength;
-                }
-                else
-                {
-                    break;
-                }
-            }
-
-            RhinoApp.WriteLine($"    [CUTOUT DEBUG] Detected at currentPos={currentPos:F3}\", boundaryPos={boundaryPos:F3}\"");
-            RhinoApp.WriteLine($"    [CUTOUT DEBUG] scanPos found cutout end at: {scanPos:F3}\"");
-            RhinoApp.WriteLine($"    [CUTOUT DEBUG] Segment lengths in cutout:");
-            for (int i = segmentIndex + 1; i <= segmentIndex + cutoutSegments.Count && i < segments.Count; i++)
-            {
-                var (debugSeg, _) = segments[i];
-                double len = GetSegmentLengthAlongEdge(debugSeg, edgeStart, edgeDirection, isHorizontal);
-                RhinoApp.WriteLine($"      Seg {i}: Length={len:F3}\"");
-            }
-            RhinoApp.WriteLine($"    [CUTOUT DEBUG] Total cutoutSegmentLength={cutoutSegmentLength:F3}\"");
-            RhinoApp.WriteLine($"    [CUTOUT DEBUG] cutoutSegments.Count={cutoutSegments.Count}");
-
-            double cutoutStart = boundaryPos;
-            double rayWidth = scanPos - boundaryPos;
-            double cutoutWidth;
-
-            if (cutoutSegmentLength > 0.01)
-            {
-                cutoutWidth = rayWidth > cutoutSegmentLength * 2.0 ? rayWidth : cutoutSegmentLength;
-            }
-            else
-            {
-                cutoutWidth = rayWidth;
-            }
-
-            double cutoutEnd = cutoutStart + cutoutWidth;
-
-            cutoutStart = System.Math.Round(cutoutStart * 16.0) / 16.0;
-            cutoutEnd = System.Math.Round(cutoutEnd * 16.0) / 16.0;
-            cutoutWidth = cutoutEnd - cutoutStart;
-
-            RhinoApp.WriteLine($"    [CUTOUT DEBUG] FINAL: start={cutoutStart:F3}\", end={cutoutEnd:F3}\", width={cutoutWidth:F3}\"");
-
-            double depthRounded = System.Math.Round(maxDepth * 16.0) / 16.0;
-            string featureType = cutoutWidth <= 2.0 ? "Edge Hole" : "Edge Slot";
-
-            int nextSegmentIndex = segmentIndex + cutoutSegments.Count;
-            if (cutoutSegments.Count == 0)
-            {
-                RhinoApp.WriteLine("    ⚠️ Zero segments detected - forcing +1 advance to prevent infinite loop");
-                nextSegmentIndex = segmentIndex + 1;
-            }
-
-            return (
-                new EdgeFeature(edgeName, cutoutStart, cutoutEnd, cutoutWidth, depthRounded, featureType),
-                nextSegmentIndex,
-                cutoutEnd);
+            RhinoApp.WriteLine($"[Edge Detection v2] {edgeHeader}, Total length: {totalLength}, Cutouts: {cutoutsText}, Gaps: {gapText}");
         }
 
-        private (EdgeFeature Feature, int NextSegmentIndex, double NextPosition)? ResolveInsetCutout(
-            List<(Curve seg, int index)> segments,
-            Point3d edgeStart,
-            Vector3d edgeDirection,
-            Vector3d perpendicular,
-            double edgeLength,
-            double boundaryPos,
-            double segLength,
-            double depth1,
-            double depth2,
-            int segmentIndex,
-            bool isHorizontal,
-            Curve panelBoundary,
-            string edgeName)
+        #region Analyzer helpers
+
+        private sealed class EdgeDetectionV2Analyzer
         {
-            const double baselineDepth = 0.001;
-            const double scanInterval = 1.0 / 16.0;
+            private readonly Rectangle3d _bbox;
+            private readonly Brep _panelBrep;
+            private readonly BoundingBox _panelBrepBox;
+            private readonly double _panelThickness;
+            private readonly double _tol;
+            private const double BaselineTolerance = 0.01;
 
-            double cutoutStart = boundaryPos;
-            double backScanPos = boundaryPos - 0.01;
-
-            while (backScanPos > boundaryPos - segLength)
+            public EdgeDetectionV2Analyzer(
+                Rectangle3d bbox,
+                Brep panelBrep,
+                BoundingBox panelBrepBox,
+                double panelThickness,
+                double tol)
             {
-                Point3d backRayPoint = edgeStart + edgeDirection * backScanPos;
-                double backDepth = ShootRayDepth(backRayPoint, perpendicular, panelBoundary);
+                _bbox = bbox;
+                _panelBrep = panelBrep;
+                _panelBrepBox = panelBrepBox;
+                _panelThickness = panelThickness;
+                _tol = tol;
+            }
 
-                if (System.Math.Abs(backDepth - baselineDepth) < 0.1)
+            public List<EdgeCutoutSummary> Analyze(EdgeSegmentData data)
+            {
+                var summaries = new List<EdgeCutoutSummary>
                 {
-                    cutoutStart = backScanPos;
-                    break;
+                    AnalyzeEdge("BOTTOM", data.BottomSegments),
+                    AnalyzeEdge("RIGHT", data.RightSegments),
+                    AnalyzeEdge("TOP", data.TopSegments),
+                    AnalyzeEdge("LEFT", data.LeftSegments)
+                };
+
+                return summaries;
+            }
+
+            private EdgeCutoutSummary AnalyzeEdge(string edgeName, List<(Curve seg, int index)> segments)
+            {
+                var frame = EdgeFrame.Create(_bbox, edgeName);
+                var summary = new EdgeCutoutSummary(edgeName, frame.Length);
+
+                if (segments == null || segments.Count == 0)
+                {
+                    summary.Gaps.Add(Math.Round(frame.Length, 4));
+                    return summary;
                 }
 
-                backScanPos -= scanInterval;
+                var ordered = segments.OrderBy(s => s.index).ToList();
+                var candidates = DetectCandidates(ordered, frame);
+                var features = BuildFeatures(frame, candidates);
+
+                summary.Cutouts.AddRange(features);
+                summary.CalculateGaps();
+
+                return summary;
             }
 
-            double cutoutEnd = boundaryPos;
-            double forwardScanPos = boundaryPos + 0.01;
-            double maxDepth = System.Math.Max(depth1, depth2);
-
-            while (forwardScanPos < edgeLength)
+            private List<EdgeCutoutCandidate> DetectCandidates(List<(Curve seg, int index)> segments, EdgeFrame frame)
             {
-                Point3d forwardRayPoint = edgeStart + edgeDirection * forwardScanPos;
-                double forwardDepth = ShootRayDepth(forwardRayPoint, perpendicular, panelBoundary);
+                var candidates = new List<EdgeCutoutCandidate>();
+                bool insideCutout = false;
+                double candidateStart = 0;
+                double maxDepth = 0;
+                bool hasCurvature = false;
 
-                maxDepth = System.Math.Max(maxDepth, forwardDepth);
-
-                if (System.Math.Abs(forwardDepth - baselineDepth) < 0.1)
+                foreach (var (seg, _) in segments)
                 {
-                    cutoutEnd = forwardScanPos;
-                    break;
+                    var sample = AnalyzeSegment(seg, frame);
+
+                    if (!insideCutout && IsStandaloneBulge(sample))
+                    {
+                        var bulgeCandidate = CreateCandidate(sample.StartAxis, sample.EndAxis, sample.MaxPerp, true);
+                        if (bulgeCandidate != null)
+                        {
+                            candidates.Add(bulgeCandidate);
+                        }
+                        continue;
+                    }
+
+                    if (!insideCutout && !sample.StartOnBaseline)
+                    {
+                        insideCutout = true;
+                        candidateStart = sample.StartAxis;
+                        maxDepth = Math.Abs(sample.StartPerp);
+                        hasCurvature = sample.IsCurved;
+                    }
+
+                    if (!insideCutout && sample.StartOnBaseline && !sample.EndOnBaseline)
+                    {
+                        insideCutout = true;
+                        candidateStart = sample.StartAxis;
+                        maxDepth = 0;
+                        hasCurvature = sample.IsCurved;
+                    }
+
+                    if (insideCutout)
+                    {
+                        maxDepth = Math.Max(maxDepth, sample.MaxPerp);
+                        hasCurvature |= sample.IsCurved;
+
+                        if (sample.EndOnBaseline)
+                        {
+                            var candidate = CreateCandidate(candidateStart, sample.EndAxis, maxDepth, hasCurvature);
+                            if (candidate != null)
+                            {
+                                candidates.Add(candidate);
+                            }
+
+                            insideCutout = false;
+                            maxDepth = 0;
+                            hasCurvature = false;
+                        }
+                    }
                 }
 
-                forwardScanPos += scanInterval;
-            }
-
-            cutoutStart = System.Math.Round(cutoutStart * 16.0) / 16.0;
-            cutoutEnd = System.Math.Round(cutoutEnd * 16.0) / 16.0;
-
-            double cutoutWidth = cutoutEnd - cutoutStart;
-            if (cutoutWidth < 0.01)
-            {
-                RhinoApp.WriteLine($"    ⚠️ Invalid inset hole: width={cutoutWidth:F3}\" - forcing segment advance");
-                return null;
-            }
-
-            double depthRounded = System.Math.Round(maxDepth * 16.0) / 16.0;
-
-            var cutoutSegments = new List<int>();
-
-            for (int i = System.Math.Max(0, segmentIndex - 1); i < segments.Count; i++)
-            {
-                var (cutSeg, _) = segments[i];
-                double segPos = 0;
-                for (int j = 0; j < i; j++)
+                if (insideCutout)
                 {
-                    segPos += GetSegmentLengthAlongEdge(segments[j].Item1, edgeStart, edgeDirection, isHorizontal);
+                    var candidate = CreateCandidate(candidateStart, frame.Length, maxDepth, hasCurvature);
+                    if (candidate != null)
+                    {
+                        candidates.Add(candidate);
+                    }
                 }
 
-                double segEndPos = segPos + GetSegmentLengthAlongEdge(cutSeg, edgeStart, edgeDirection, isHorizontal);
+                return candidates;
+            }
 
-                if (segEndPos >= cutoutStart - 0.01 && segPos <= cutoutEnd + 0.01)
+            private bool IsStandaloneBulge(EdgeSegmentSample sample)
+            {
+                return sample.IsCurved &&
+                       sample.StartOnBaseline &&
+                       sample.EndOnBaseline &&
+                       sample.MaxPerp >= MinimumFeatureDepth;
+            }
+
+            private EdgeCutoutCandidate CreateCandidate(double start, double end, double depth, bool hasCurvature)
+            {
+                double width = Math.Abs(end - start);
+                if (width < MinimumFeatureWidth || depth < MinimumFeatureDepth)
                 {
-                    cutoutSegments.Add(i + 1);
+                    return null;
+                }
+
+                double actualStart = Math.Min(start, end);
+                double actualEnd = Math.Max(start, end);
+
+                return new EdgeCutoutCandidate
+                {
+                    Start = actualStart,
+                    End = actualEnd,
+                    Depth = depth,
+                    HasCurvature = hasCurvature
+                };
+            }
+
+            private EdgeSegmentSample AnalyzeSegment(Curve segment, EdgeFrame frame)
+            {
+                var startPoint = segment.PointAtStart;
+                var endPoint = segment.PointAtEnd;
+                bool isCurved = !segment.IsLinear(_tol);
+
+                double startAxis = frame.ClampAxis(frame.ProjectToAxis(startPoint));
+                double endAxis = frame.ClampAxis(frame.ProjectToAxis(endPoint));
+                double startPerp = frame.ProjectToPerp(startPoint);
+                double endPerp = frame.ProjectToPerp(endPoint);
+                double maxPerp = Math.Max(Math.Abs(startPerp), Math.Abs(endPerp));
+
+                int samples = isCurved ? 8 : 4;
+                for (int i = 1; i < samples - 1; i++)
+                {
+                    double normalized = (double)i / (samples - 1);
+                    double t = segment.Domain.ParameterAt(normalized);
+                    var pt = segment.PointAt(t);
+                    double perp = Math.Abs(frame.ProjectToPerp(pt));
+                    if (perp > maxPerp)
+                    {
+                        maxPerp = perp;
+                    }
+                }
+
+                return new EdgeSegmentSample
+                {
+                    StartAxis = startAxis,
+                    EndAxis = endAxis,
+                    StartPerp = startPerp,
+                    EndPerp = endPerp,
+                    MaxPerp = maxPerp,
+                    IsCurved = isCurved,
+                    BaselineTolerance = BaselineTolerance
+                };
+            }
+
+            private List<EdgeFeature> BuildFeatures(EdgeFrame frame, List<EdgeCutoutCandidate> candidates)
+            {
+                var features = new List<EdgeFeature>();
+
+                foreach (var candidate in candidates)
+                {
+                    if (!IsThroughCutout(candidate, frame))
+                    {
+                        continue;
+                    }
+
+                    double start = Round(candidate.Start);
+                    double end = Round(candidate.End);
+                    double width = Round(end - start);
+                    double depth = Round(candidate.Depth);
+                    string type = DetermineType(candidate);
+                    bool hasCurvature = candidate.HasCurvature;
+
+                    var feature = new EdgeFeature(frame.EdgeName, start, end, width, depth, type, hasCurvature);
+                    feature.EdgeLength = frame.Length;
+                    features.Add(feature);
+                }
+
+                features = features.OrderBy(f => f.StartPos).ToList();
+                AssignGapData(features, frame.Length);
+
+                return features;
+            }
+
+            private void AssignGapData(List<EdgeFeature> features, double edgeLength)
+            {
+                if (features.Count == 0)
+                {
+                    return;
+                }
+
+                for (int i = 0; i < features.Count; i++)
+                {
+                    double gapBefore = i == 0
+                        ? Math.Max(0, features[i].StartPos)
+                        : Math.Max(0, features[i].StartPos - features[i - 1].EndPos);
+
+                    double gapAfter = i == features.Count - 1
+                        ? Math.Max(0, edgeLength - features[i].EndPos)
+                        : Math.Max(0, features[i + 1].StartPos - features[i].EndPos);
+
+                    features[i].GapBefore = Round(gapBefore);
+                    features[i].GapAfter = Round(gapAfter);
                 }
             }
 
-            string featureType = cutoutWidth <= 2.0 ? "Edge Hole" : "Edge Slot";
-
-            int nextSegmentIndex = segmentIndex + cutoutSegments.Count;
-            if (cutoutSegments.Count == 0)
+            private bool IsThroughCutout(EdgeCutoutCandidate candidate, EdgeFrame frame)
             {
-                RhinoApp.WriteLine("    ⚠️ Zero segments detected - forcing +1 advance to prevent infinite loop");
-                nextSegmentIndex = segmentIndex + 1;
+                if (_panelBrep == null || !_panelBrepBox.IsValid)
+                {
+                    return true;
+                }
+
+                double axisMid = (candidate.Start + candidate.End) / 2.0;
+                double depthProbe = Math.Max(candidate.Depth * 0.5, 0.01);
+                depthProbe = Math.Min(depthProbe, candidate.Depth - 0.005);
+                if (depthProbe <= 0)
+                {
+                    depthProbe = candidate.Depth * 0.5;
+                }
+
+                var sample2D = frame.PointAt(axisMid, depthProbe);
+                double zMargin = Math.Min(Math.Max(_panelThickness * 0.1, 0.01), 0.05);
+
+                var topPoint = new Point3d(sample2D.X, sample2D.Y, _panelBrepBox.Max.Z - zMargin);
+                var bottomPoint = new Point3d(sample2D.X, sample2D.Y, _panelBrepBox.Min.Z + zMargin);
+
+                bool topInside;
+                bool bottomInside;
+
+                try
+                {
+                    topInside = _panelBrep.IsPointInside(topPoint, _tol, true);
+                    bottomInside = _panelBrep.IsPointInside(bottomPoint, _tol, true);
+                }
+                catch
+                {
+                    return true;
+                }
+
+                // Through cutouts will be outside the Brep at both probes.
+                return !topInside && !bottomInside;
             }
 
-            return (
-                new EdgeFeature(edgeName, cutoutStart, cutoutEnd, cutoutWidth, depthRounded, featureType),
-                nextSegmentIndex,
-                cutoutEnd);
+            private static double Round(double value)
+            {
+                return Math.Round(value / RoundingIncrement) * RoundingIncrement;
+            }
+
+            private string DetermineType(EdgeCutoutCandidate candidate)
+            {
+                if (!candidate.HasCurvature)
+                {
+                    return "EdgeNotch";
+                }
+
+                return (candidate.End - candidate.Start) <= HoleWidthThreshold
+                    ? "EdgeCordHole"
+                    : "EdgeCordSlot";
+            }
         }
 
-        private void GetEdgeParameters(
-            Rectangle3d bbox,
-            string edgeName,
-            out Point3d edgeStart,
-            out Point3d edgeEnd,
-            out Vector3d edgeDirection,
-            out Vector3d perpendicular)
+        private sealed class EdgeCutoutCandidate
         {
-            Point3d bottomLeft = bbox.Corner(0);
-            Point3d bottomRight = bbox.Corner(1);
-            Point3d topRight = bbox.Corner(2);
-            Point3d topLeft = bbox.Corner(3);
+            public double Start { get; set; }
+            public double End { get; set; }
+            public double Depth { get; set; }
+            public bool HasCurvature { get; set; }
+        }
 
-            switch (edgeName)
+        private sealed class EdgeSegmentSample
+        {
+            public double StartAxis { get; set; }
+            public double EndAxis { get; set; }
+            public double StartPerp { get; set; }
+            public double EndPerp { get; set; }
+            public double MaxPerp { get; set; }
+            public bool IsCurved { get; set; }
+            public double BaselineTolerance { get; set; }
+
+            public bool StartOnBaseline => Math.Abs(StartPerp) <= BaselineTolerance;
+            public bool EndOnBaseline => Math.Abs(EndPerp) <= BaselineTolerance;
+        }
+
+        private sealed class EdgeFrame
+        {
+            public string EdgeName { get; }
+            public Point3d Start { get; }
+            public Point3d End { get; }
+            public Vector3d Direction { get; }
+            public Vector3d Perpendicular { get; }
+            public double Length { get; }
+
+            private EdgeFrame(string edgeName, Point3d start, Point3d end, Vector3d direction, Vector3d perpendicular)
             {
-                case "BOTTOM":
-                    edgeStart = bottomLeft;
-                    edgeEnd = bottomRight;
-                    edgeDirection = Vector3d.XAxis;
-                    perpendicular = Vector3d.YAxis;
-                    break;
-                case "RIGHT":
-                    edgeStart = bottomRight;
-                    edgeEnd = topRight;
-                    edgeDirection = Vector3d.YAxis;
-                    perpendicular = -Vector3d.XAxis;
-                    break;
-                case "TOP":
-                    edgeStart = topRight;
-                    edgeEnd = topLeft;
-                    edgeDirection = -Vector3d.XAxis;
-                    perpendicular = -Vector3d.YAxis;
-                    break;
-                case "LEFT":
-                    edgeStart = topLeft;
-                    edgeEnd = bottomLeft;
-                    edgeDirection = -Vector3d.YAxis;
-                    perpendicular = Vector3d.XAxis;
-                    break;
-                default:
-                    throw new ArgumentException($"Unknown edge name: {edgeName}");
+                EdgeName = edgeName;
+                Start = start;
+                End = end;
+                Direction = direction;
+                Perpendicular = perpendicular;
+                Length = start.DistanceTo(end);
             }
 
-            edgeDirection.Unitize();
-            perpendicular.Unitize();
-        }
-
-        private double GetSegmentLengthAlongEdge(Curve segment, Point3d edgeStart, Vector3d edgeDirection, bool isHorizontal)
-        {
-            Point3d segStart = segment.PointAtStart;
-            Point3d segEnd = segment.PointAtEnd;
-
-            return isHorizontal
-                ? Math.Abs(segEnd.X - segStart.X)
-                : Math.Abs(segEnd.Y - segStart.Y);
-        }
-
-        private double ShootRayDepth(Point3d origin, Vector3d direction, Curve panelBoundary)
-        {
-            Point3d rayStart = origin + direction * -0.001;
-            Point3d rayEnd = rayStart + direction * 20.0;
-            var rayCurve = new LineCurve(rayStart, rayEnd);
-
-            var intersections = Intersection.CurveCurve(panelBoundary, rayCurve, 0.001, 0.001);
-
-            if (intersections != null && intersections.Count > 0)
+            public static EdgeFrame Create(Rectangle3d bbox, string edgeName)
             {
-                const double baselineDepth = 0.001;
-                var depths = new List<double>();
-                foreach (var intersection in intersections)
+                Point3d bottomLeft = bbox.Corner(0);
+                Point3d bottomRight = bbox.Corner(1);
+                Point3d topRight = bbox.Corner(2);
+                Point3d topLeft = bbox.Corner(3);
+
+                switch (edgeName)
                 {
-                    depths.Add(rayStart.DistanceTo(intersection.PointA));
+                    case "BOTTOM":
+                        return new EdgeFrame(edgeName, bottomLeft, bottomRight, Vector3d.XAxis, Vector3d.YAxis);
+                    case "RIGHT":
+                        return new EdgeFrame(edgeName, bottomRight, topRight, Vector3d.YAxis, -Vector3d.XAxis);
+                    case "TOP":
+                        return new EdgeFrame(edgeName, topLeft, topRight, Vector3d.XAxis, -Vector3d.YAxis);
+                    case "LEFT":
+                        return new EdgeFrame(edgeName, bottomLeft, topLeft, Vector3d.YAxis, Vector3d.XAxis);
+                    default:
+                        throw new ArgumentException($"Unknown edge name: {edgeName}");
+                }
+            }
+
+            public double ProjectToAxis(Point3d point)
+            {
+                var vector = point - Start;
+                return vector * Direction;
+            }
+
+            public double ProjectToPerp(Point3d point)
+            {
+                var vector = point - Start;
+                return vector * Perpendicular;
+            }
+
+            public Point3d PointAt(double axis, double perp)
+            {
+                return Start + Direction * axis + Perpendicular * perp;
+            }
+
+            public double ClampAxis(double axis)
+            {
+                if (axis < 0)
+                {
+                    return 0;
                 }
 
-                depths.Sort();
-                return depths.Count > 0 ? depths[0] : baselineDepth;
+                if (axis > Length)
+                {
+                    return Length;
+                }
+
+                return axis;
+            }
+        }
+
+        private sealed class EdgeCutoutSummary
+        {
+            public EdgeCutoutSummary(string edgeName, double totalLength)
+            {
+                EdgeName = edgeName;
+                TotalLength = totalLength;
             }
 
-            return double.MaxValue;
+            public string EdgeName { get; }
+            public double TotalLength { get; }
+            public List<EdgeFeature> Cutouts { get; } = new List<EdgeFeature>();
+            public List<double> Gaps { get; } = new List<double>();
+
+            public void CalculateGaps()
+            {
+                Gaps.Clear();
+
+                if (Cutouts.Count == 0)
+                {
+                    Gaps.Add(Math.Round(TotalLength, 4));
+                    return;
+                }
+
+                double firstGap = Math.Max(0, Cutouts[0].StartPos);
+                Gaps.Add(Math.Round(firstGap, 4));
+
+                for (int i = 1; i < Cutouts.Count; i++)
+                {
+                    double gap = Math.Max(0, Cutouts[i].StartPos - Cutouts[i - 1].EndPos);
+                    Gaps.Add(Math.Round(gap, 4));
+                }
+
+                double finalGap = Math.Max(0, TotalLength - Cutouts[Cutouts.Count - 1].EndPos);
+                Gaps.Add(Math.Round(finalGap, 4));
+            }
         }
+
+        #endregion
     }
 }

@@ -3,6 +3,7 @@ using Rhino.DocObjects;
 using Rhino.Geometry;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace FWBlueprintPlugin.Services
@@ -18,6 +19,13 @@ namespace FWBlueprintPlugin.Services
         private List<BoundingBox> _panelBounds = new List<BoundingBox>();
         private List<PanelDimensionInfo> _deferredDimensions = new List<PanelDimensionInfo>();
         private List<PanelLeaderInfo> _deferredLeaders = new List<PanelLeaderInfo>();
+
+        private struct PanelCategoryEntry
+        {
+            public BoundingBox BBox;
+            public Guid PanelId;
+            public string Letter;
+        }
 
         public PanelArrangementService(RhinoDoc doc)
         {
@@ -72,12 +80,19 @@ namespace FWBlueprintPlugin.Services
                 int topIdx = 0;
                 foreach (var obj in allTopComponents)
                 {
-                    _panelThicknesses[$"Top_{topIdx}"] = CalculateThickness(obj.Geometry);
+                    double thickness = CalculateThickness(obj.Geometry);
+                    _panelThicknesses[$"Top_{topIdx}"] = thickness;
+                    AssignPanelThickness(obj, thickness);
                     topIdx++;
                 }
 
-                _panelThicknesses["Back"] = CalculateThickness(backPanel.Geometry);
-                _panelThicknesses["Bottom"] = CalculateThickness(bottomPanel.Geometry);
+                double backThickness = CalculateThickness(backPanel.Geometry);
+                _panelThicknesses["Back"] = backThickness;
+                AssignPanelThickness(backPanel, backThickness);
+
+                double bottomThickness = CalculateThickness(bottomPanel.Geometry);
+                _panelThicknesses["Bottom"] = bottomThickness;
+                AssignPanelThickness(bottomPanel, bottomThickness);
 
                 var topInfo = FlattenLiftLidTop(topConfig, leftAlignX, startY, panelsLayerIndex);
                 _panelBounds.Add(topInfo.OverallBBox);
@@ -304,7 +319,7 @@ namespace FWBlueprintPlugin.Services
                     var newBBox = item.BBox;
                     newBBox.Transform(translate);
                     list[i] = new FlattenedComponent { Geom = item.Geom, BBox = newBBox };
-                    AddToLayer(item.Geom, layerIndex, "Top");
+                    _ = AddToLayer(item.Geom, layerIndex, "Top");
                 }
             };
 
@@ -473,15 +488,19 @@ namespace FWBlueprintPlugin.Services
                 string key = $"{panelType}_{i}";
                 double thickness = CalculateThickness(panels[i].Geometry);
                 _panelThicknesses[key] = thickness;
+                AssignPanelThickness(panels[i], thickness);
                 categoryThickness = thickness;
             }
 
+            bool shouldLabelPanels = panels.Count > 1;
+
             double currentX = leftAlignX;
             double categoryMaxHeight = 0;
-            var categoryBounds = new List<BoundingBox>();
+            var categoryEntries = new List<PanelCategoryEntry>();
 
-            foreach (var panel in panels)
+            for (int panelIndex = 0; panelIndex < panels.Count; panelIndex++)
             {
+                var panel = panels[panelIndex];
                 var panelFlat = FlattenPanel(panel.Geometry, panelType);
                 var panelBox = panelFlat.GetBoundingBox(true);
 
@@ -491,9 +510,15 @@ namespace FWBlueprintPlugin.Services
                 panelFlat.Transform(Transform.Translation(panelMoveX, panelMoveY, 0));
                 panelBox = panelFlat.GetBoundingBox(true);
 
-                AddToLayer(panelFlat, panelsLayerIndex, panelType);
+                var panelGuid = AddToLayer(panelFlat, panelsLayerIndex, panelType);
+
                 _panelBounds.Add(panelBox);
-                categoryBounds.Add(panelBox);
+                categoryEntries.Add(new PanelCategoryEntry
+                {
+                    BBox = panelBox,
+                    PanelId = panelGuid,
+                    Letter = string.Empty
+                });
 
                 currentX = panelBox.Max.X;
 
@@ -501,7 +526,48 @@ namespace FWBlueprintPlugin.Services
                 categoryMaxHeight = Math.Max(categoryMaxHeight, panelHeight);
             }
 
-            categoryBounds.Sort((a, b) => a.Min.X.CompareTo(b.Min.X));
+            if (categoryEntries.Count > 1)
+            {
+                categoryEntries.Sort((a, b) => a.BBox.Min.X.CompareTo(b.BBox.Min.X));
+            }
+
+            for (int i = 0; i < categoryEntries.Count; i++)
+            {
+                var entry = categoryEntries[i];
+                string letter = ConvertIndexToLetter(i);
+                entry.Letter = letter;
+
+                if (entry.PanelId != Guid.Empty)
+                {
+                    var panelObj = _doc.Objects.FindId(entry.PanelId);
+                    if (panelObj != null)
+                    {
+                        if (shouldLabelPanels)
+                        {
+                            panelObj.Attributes.Name = $"{panelType}: {letter}";
+                            panelObj.Attributes.SetUserString("PanelLabel", letter);
+                            panelObj.Attributes.SetUserString("PanelName", $"{panelType}: {letter}");
+                        }
+                        else
+                        {
+                            panelObj.Attributes.Name = panelType;
+                            panelObj.Attributes.SetUserString("PanelName", panelType);
+                            panelObj.Attributes.SetUserString("PanelLabel", string.Empty);
+                        }
+
+                        panelObj.CommitChanges();
+                    }
+                }
+
+                if (shouldLabelPanels)
+                {
+                    AddPanelMarker(entry.BBox, letter, panelsLayerIndex);
+                }
+
+                categoryEntries[i] = entry;
+            }
+
+            var categoryBounds = categoryEntries.Select(entry => entry.BBox).ToList();
 
             BoundingBox groupBBox = categoryBounds[0];
             for (int i = 1; i < categoryBounds.Count; i++)
@@ -523,12 +589,13 @@ namespace FWBlueprintPlugin.Services
                     LayerIndex = dimensionsLayerIndex
                 });
 
-                foreach (var bbox in categoryBounds)
+                for (int i = 0; i < categoryEntries.Count; i++)
                 {
+                    var entry = categoryEntries[i];
                     _deferredDimensions.Add(new PanelDimensionInfo
                     {
-                        BBox = bbox,
-                        PanelType = panelType,
+                        BBox = entry.BBox,
+                        PanelType = $"{panelType}: {entry.Letter}",
                         IsChild = true,
                         DrawWidth = true,
                         DrawHeight = false,
@@ -567,7 +634,7 @@ namespace FWBlueprintPlugin.Services
                     _deferredDimensions.Add(new PanelDimensionInfo
                     {
                         BBox = categoryBounds[0],
-                        PanelType = panelType,
+                        PanelType = $"{panelType}: {categoryEntries[0].Letter}",
                         DrawWidth = false,
                         DrawHeight = true,
                         IsRightHeightDim = false,
@@ -579,7 +646,7 @@ namespace FWBlueprintPlugin.Services
                         _deferredDimensions.Add(new PanelDimensionInfo
                         {
                             BBox = categoryBounds[i],
-                            PanelType = panelType,
+                            PanelType = $"{panelType}: {categoryEntries[i].Letter}",
                             DrawWidth = false,
                             DrawHeight = true,
                             IsRightHeightDim = true,
@@ -593,7 +660,7 @@ namespace FWBlueprintPlugin.Services
                 _deferredDimensions.Add(new PanelDimensionInfo
                 {
                     BBox = categoryBounds[0],
-                    PanelType = panelType,
+                    PanelType = $"{panelType}: {categoryEntries[0].Letter}",
                     Quantity = panels.Count,
                     IsChild = false,
                     DrawWidth = true,
@@ -671,6 +738,101 @@ namespace FWBlueprintPlugin.Services
                 }
 
                 _doc.Views.Redraw();
+            }
+            catch
+            {
+            }
+        }
+
+        private static string ConvertIndexToLetter(int index)
+        {
+            const int alphabetSize = 26;
+            if (index < 0)
+            {
+                return "A";
+            }
+
+            var result = string.Empty;
+            int current = index;
+            do
+            {
+                int remainder = current % alphabetSize;
+                result = (char)('A' + remainder) + result;
+                current = (current / alphabetSize) - 1;
+            } while (current >= 0);
+
+            return result;
+        }
+
+        private void AddPanelMarker(BoundingBox panelBox, string letter, int layerIndex)
+        {
+            try
+            {
+                var dimStyle = _doc.DimStyles.FindName("Furniture Dim - CG") ?? _doc.DimStyles.Current;
+                double targetHeight = 0.6;
+
+                var plane = Plane.WorldXY;
+                plane.Origin = new Point3d(panelBox.Min.X + 0.75, panelBox.Max.Y - 1.25, 0);
+
+                var textEntity = new TextEntity
+                {
+                    Plane = plane,
+                    PlainText = letter,
+                    Justification = TextJustification.MiddleLeft,
+                    TextHeight = targetHeight
+                };
+
+                if (dimStyle != null)
+                {
+                    string faceName = dimStyle.Font?.FaceName;
+                    Rhino.DocObjects.Font fontToUse = null;
+
+                    if (!string.IsNullOrEmpty(faceName))
+                    {
+                        try
+                        {
+                            fontToUse = Rhino.DocObjects.Font.FromQuartetProperties(faceName, true, false);
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    if (fontToUse == null && dimStyle.Font != null && !string.IsNullOrEmpty(dimStyle.Font.FaceName))
+                    {
+                        try
+                        {
+                            fontToUse = Rhino.DocObjects.Font.FromQuartetProperties(dimStyle.Font.FaceName, true, false);
+                        }
+                        catch
+                        {
+                            fontToUse = dimStyle.Font;
+                        }
+                    }
+
+                    if (fontToUse == null && dimStyle.Font != null)
+                    {
+                        fontToUse = dimStyle.Font;
+                    }
+
+                    if (fontToUse != null)
+                    {
+                        textEntity.Font = fontToUse;
+                    }
+
+                    string fontFaceForRtf = fontToUse?.FaceName ?? dimStyle?.Font?.FaceName ?? "Arial";
+                    string escapedFont = fontFaceForRtf.Replace("\\", "\\\\").Replace("{", "\\{").Replace("}", "\\}");
+                    string escapedLetter = letter.Replace("\\", "\\\\").Replace("{", "\\{").Replace("}", "\\}");
+                    textEntity.RichText = $"{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f0 {escapedFont};}}}}\\f0\\b {escapedLetter}}}";
+                }
+
+                var attr = new ObjectAttributes
+                {
+                    LayerIndex = layerIndex,
+                    ColorSource = ObjectColorSource.ColorFromLayer
+                };
+
+                _doc.Objects.AddText(textEntity, attr);
             }
             catch
             {
@@ -759,7 +921,7 @@ namespace FWBlueprintPlugin.Services
             return flattened;
         }
 
-        private void AddToLayer(GeometryBase geometry, int layerIndex, string panelCategory = "")
+        private Guid AddToLayer(GeometryBase geometry, int layerIndex, string panelCategory = "")
         {
             var attr = new ObjectAttributes
             {
@@ -785,7 +947,7 @@ namespace FWBlueprintPlugin.Services
                         brep = Brep.TryConvertBrep(geometry);
                         if (brep == null)
                         {
-                            return;
+                            return Guid.Empty;
                         }
                     }
                 }
@@ -802,7 +964,28 @@ namespace FWBlueprintPlugin.Services
                             panelObj.CommitChanges();
                         }
                     }
+
+                    return guid;
                 }
+            }
+            catch
+            {
+            }
+
+            return Guid.Empty;
+        }
+
+        private void AssignPanelThickness(RhinoObject panel, double thickness)
+        {
+            if (panel == null)
+            {
+                return;
+            }
+
+            try
+            {
+                panel.Attributes.SetUserString("PanelThickness", thickness.ToString(CultureInfo.InvariantCulture));
+                panel.CommitChanges();
             }
             catch
             {

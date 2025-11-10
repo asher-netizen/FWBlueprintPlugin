@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.Linq;
 using Rhino;
 using Rhino.DocObjects;
@@ -57,6 +58,23 @@ namespace FWBlueprintPlugin.Services.Phase3
                 }
 
                 string category = obj.Attributes.GetUserString("PanelCategory") ?? "Unknown";
+                string panelLabel = obj.Attributes.GetUserString("PanelLabel") ?? string.Empty;
+                string panelName = obj.Attributes.GetUserString("PanelName");
+                string attributeName = obj.Attributes.Name;
+
+                string panelDisplayName = category;
+                if (!string.IsNullOrEmpty(panelLabel))
+                {
+                    panelDisplayName = $"{category} {panelLabel}";
+                }
+                else if (!string.IsNullOrEmpty(panelName))
+                {
+                    panelDisplayName = panelName.Replace(": ", " ");
+                }
+                else if (!string.IsNullOrEmpty(attributeName))
+                {
+                    panelDisplayName = attributeName.Replace(": ", " ");
+                }
 
                 var bbox = GetTopViewBoundingBox(brep);
                 if (!bbox.IsValid)
@@ -64,7 +82,7 @@ namespace FWBlueprintPlugin.Services.Phase3
                     continue;
                 }
 
-                AddBoundingBoxCurve(bbox, category, layerContext);
+                AddBoundingBoxCurve(bbox, category, panelLabel, panelDisplayName, layerContext);
                 result.BoundingBoxCount++;
 
                 var panelBoundary = GetPanelBoundaryCurve(brep, tol);
@@ -75,18 +93,32 @@ namespace FWBlueprintPlugin.Services.Phase3
 
                 var segmentData = AnalyzeAndLabelBoundarySegments_WithData(panelBoundary, bbox, category, tol);
 
-                var edgeFeatures = _edgeFeatureDetectionService.DimensionEdgeFeatures(
-                    bbox,
-                    panelBoundary,
-                    segmentData,
-                    brep,
-                    tol,
-                    layerContext.DimensionsLayerIndex);
+                double panelThickness = GetPanelThickness(obj, brep);
 
-                if (edgeFeatures.Count > 0)
+                bool skipEdgeFeatures = category.Equals("Door", StringComparison.OrdinalIgnoreCase);
+                List<EdgeFeature> edgeFeatures = new List<EdgeFeature>();
+
+                if (skipEdgeFeatures)
                 {
-                    result.EdgeFeatureCount += edgeFeatures.Count;
-                    result.EdgeFeatures.AddRange(edgeFeatures);
+                    RhinoApp.WriteLine($"[Edge Detection v2] Skipping edge detection/dimensioning for door panel '{panelDisplayName}'.");
+                }
+                else
+                {
+                    edgeFeatures = _edgeFeatureDetectionService.DimensionEdgeFeatures(
+                        bbox,
+                        panelBoundary,
+                        segmentData,
+                        brep,
+                        panelThickness,
+                        tol,
+                        layerContext.DimensionsLayerIndex,
+                        panelDisplayName);
+
+                    if (edgeFeatures.Count > 0)
+                    {
+                        result.EdgeFeatureCount += edgeFeatures.Count;
+                        result.EdgeFeatures.AddRange(edgeFeatures);
+                    }
                 }
 
                 var interiorCutouts = DetectInteriorFeatures(brep, bbox, tol);
@@ -107,6 +139,14 @@ namespace FWBlueprintPlugin.Services.Phase3
                             ColorSource = ObjectColorSource.ColorFromObject
                         };
                         notchAttr.SetUserString("PanelCategory", category);
+                        if (!string.IsNullOrEmpty(panelLabel))
+                        {
+                            notchAttr.SetUserString("PanelLabel", panelLabel);
+                        }
+                        if (!string.IsNullOrEmpty(panelDisplayName))
+                        {
+                            notchAttr.SetUserString("PanelDisplayName", panelDisplayName);
+                        }
                         _doc.Objects.AddBrep(cutout, notchAttr);
                     }
 
@@ -122,7 +162,7 @@ namespace FWBlueprintPlugin.Services.Phase3
                     ? "Clean ✓"
                     : $"{edgeFeatures.Count} edge, {interiorCutouts.Count} interior → Dimensioned ✓";
 
-                RhinoApp.WriteLine($"{category} ({bbox.Width:F2}\" × {bbox.Height:F2}\"): {featureSummary}");
+                RhinoApp.WriteLine($"{panelDisplayName} ({bbox.Width:F2}\" × {bbox.Height:F2}\"): {featureSummary}");
             }
 
             SetLayerVisibilities(layerContext);
@@ -137,7 +177,7 @@ namespace FWBlueprintPlugin.Services.Phase3
             return result;
         }
 
-        private void AddBoundingBoxCurve(Rectangle3d bbox, string category, BlueprintLayerContext context)
+        private void AddBoundingBoxCurve(Rectangle3d bbox, string category, string panelLabel, string panelDisplayName, BlueprintLayerContext context)
         {
             var bboxCurve = bbox.ToNurbsCurve();
             var bboxAttr = new ObjectAttributes
@@ -148,6 +188,14 @@ namespace FWBlueprintPlugin.Services.Phase3
                 ColorSource = ObjectColorSource.ColorFromLayer
             };
             bboxAttr.SetUserString("PanelCategory", category);
+            if (!string.IsNullOrEmpty(panelLabel))
+            {
+                bboxAttr.SetUserString("PanelLabel", panelLabel);
+            }
+            if (!string.IsNullOrEmpty(panelDisplayName))
+            {
+                bboxAttr.SetUserString("PanelDisplayName", panelDisplayName);
+            }
             bboxAttr.SetUserString("GeometryType", "BoundingBox");
             _doc.Objects.AddCurve(bboxCurve, bboxAttr);
         }
@@ -199,6 +247,34 @@ namespace FWBlueprintPlugin.Services.Phase3
             }
 
             return interiorCutouts;
+        }
+
+        private double GetPanelThickness(RhinoObject panelObj, Brep brep)
+        {
+            if (panelObj != null)
+            {
+                string thicknessValue = panelObj.Attributes.GetUserString("PanelThickness");
+                if (!string.IsNullOrWhiteSpace(thicknessValue) &&
+                    double.TryParse(thicknessValue, NumberStyles.Float, CultureInfo.InvariantCulture, out double storedThickness) &&
+                    storedThickness > 0)
+                {
+                    return storedThickness;
+                }
+            }
+
+            if (brep != null)
+            {
+                var bbox = brep.GetBoundingBox(true);
+                if (bbox.IsValid)
+                {
+                    double xSize = bbox.Max.X - bbox.Min.X;
+                    double ySize = bbox.Max.Y - bbox.Min.Y;
+                    double zSize = bbox.Max.Z - bbox.Min.Z;
+                    return Math.Min(Math.Min(xSize, ySize), zSize);
+                }
+            }
+
+            return 0.0;
         }
 
         private BrepFace FindHorizontalFace(Brep brep)
@@ -633,7 +709,7 @@ namespace FWBlueprintPlugin.Services.Phase3
                 if (interPoints.Count >= 2)
                 {
                     double edgeWidth = interPoints[0].DistanceTo(interPoints[1]);
-                    type = edgeWidth <= 2.0 ? "EdgeCordHole" : "EdgeCordSlot";
+                    type = edgeWidth <= 2.0625 ? "EdgeCordHole" : "EdgeCordSlot";
 
                     double avgX = interPoints.Average(p => p.X);
                     double avgY = interPoints.Average(p => p.Y);
@@ -669,6 +745,23 @@ namespace FWBlueprintPlugin.Services.Phase3
             double xDistRight = panelBBox.Max.X - center.X;
             double yDistBottom = center.Y - panelBBox.Min.Y;
             double yDistTop = center.Y - panelBBox.Max.Y;
+
+            if (type.Equals("InteriorCordHole", StringComparison.OrdinalIgnoreCase))
+            {
+                const double cornerThreshold = 2.0625;
+                int nearEdges = 0;
+
+                if (Math.Abs(center.X - panelBBox.Min.X) <= cornerThreshold) nearEdges++;
+                if (Math.Abs(panelBBox.Max.X - center.X) <= cornerThreshold) nearEdges++;
+                if (Math.Abs(center.Y - panelBBox.Min.Y) <= cornerThreshold) nearEdges++;
+                if (Math.Abs(panelBBox.Max.Y - center.Y) <= cornerThreshold) nearEdges++;
+
+                if (nearEdges >= 2)
+                {
+                    RhinoApp.WriteLine("[Interior Cord Hole] Skipping dimensions because the feature is within 2.0625\" of two edges.");
+                    return;
+                }
+            }
 
             bool fromLeft = xDistLeft < xDistRight;
             Point3d xStart = fromLeft ? new Point3d(panelBBox.Min.X, center.Y, 0) : new Point3d(panelBBox.Max.X, center.Y, 0);
@@ -850,9 +943,24 @@ namespace FWBlueprintPlugin.Services.Phase3
                     string endEdge = FindConnectedEdge(endPt, data.BottomSegments, data.RightSegments,
                                                         data.TopSegments, data.LeftSegments, connectTolerance);
 
-                    if (startEdge != null && startEdge == endEdge)
+                    string targetEdge = null;
+
+                    if (!string.IsNullOrEmpty(startEdge) && startEdge == endEdge)
                     {
-                        interiorToReassign.Add((seg, idx, startEdge));
+                        targetEdge = startEdge;
+                    }
+                    else if (!string.IsNullOrEmpty(startEdge) && string.IsNullOrEmpty(endEdge))
+                    {
+                        targetEdge = startEdge;
+                    }
+                    else if (!string.IsNullOrEmpty(endEdge) && string.IsNullOrEmpty(startEdge))
+                    {
+                        targetEdge = endEdge;
+                    }
+
+                    if (targetEdge != null)
+                    {
+                        interiorToReassign.Add((seg, idx, targetEdge));
                         changesMade = true;
                     }
                 }

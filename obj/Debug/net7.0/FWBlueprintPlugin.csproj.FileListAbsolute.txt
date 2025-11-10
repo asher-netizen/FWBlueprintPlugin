@@ -12,3 +12,4 @@ C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\refint\FWBlueprintPlug
 C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.pdb
 C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.genruntimeconfig.cache
 C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\ref\FWBlueprintPlugin.rhp
+C:\Users\asher\Desktop\FWBlueprintPlugin\obj\Debug\net7.0\FWBlueprintPlugin.sourcelink.json
