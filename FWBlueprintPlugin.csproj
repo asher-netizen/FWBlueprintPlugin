@@ -25,5 +25,9 @@
   <ItemGroup>
     <PackageReference Include="RhinoCommon" Version="8.24.25281.15001" ExcludeAssets="runtime" />
   </ItemGroup>
-  
+
+  <ItemGroup>
+    <EmbeddedResource Include="EmbeddedResources\BlueprintAnnotationStyles.3dm" />
+  </ItemGroup>
+
 </Project>

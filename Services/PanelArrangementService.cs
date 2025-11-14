@@ -19,6 +19,7 @@ namespace FWBlueprintPlugin.Services
         private List<BoundingBox> _panelBounds = new List<BoundingBox>();
         private List<PanelDimensionInfo> _deferredDimensions = new List<PanelDimensionInfo>();
         private List<PanelLeaderInfo> _deferredLeaders = new List<PanelLeaderInfo>();
+        private int _panelMarkerDimStyleIndex = -1;
 
         private struct PanelCategoryEntry
         {
@@ -242,15 +243,13 @@ namespace FWBlueprintPlugin.Services
 
         private void CreateDimensionStyle()
         {
-            const string styleName = "Furniture Dim - CG";
-
-            for (int i = 0; i < _doc.DimStyles.Count; i++)
+            var styleName = BlueprintAnnotationStyles.Default;
+            if (_doc.DimStyles.FindName(styleName) != null)
             {
-                if (_doc.DimStyles[i].Name == styleName)
-                {
-                    return;
-                }
+                return;
             }
+
+            RhinoApp.WriteLine($"[Blueprint Styles] Dimension style '{styleName}' is missing; ensure the resource model is available.");
         }
 
         private double CalculateThickness(GeometryBase geometry)
@@ -498,32 +497,50 @@ namespace FWBlueprintPlugin.Services
             double categoryMaxHeight = 0;
             var categoryEntries = new List<PanelCategoryEntry>();
 
-            for (int panelIndex = 0; panelIndex < panels.Count; panelIndex++)
+            bool arrangeAsDoors = panelType.Equals("Door", StringComparison.OrdinalIgnoreCase);
+
+            if (arrangeAsDoors)
             {
-                var panel = panels[panelIndex];
-                var panelFlat = FlattenPanel(panel.Geometry, panelType);
-                var panelBox = panelFlat.GetBoundingBox(true);
-
-                var panelMoveX = currentX - panelBox.Min.X;
-                var panelMoveY = currentY - panelBox.Max.Y;
-
-                panelFlat.Transform(Transform.Translation(panelMoveX, panelMoveY, 0));
-                panelBox = panelFlat.GetBoundingBox(true);
-
-                var panelGuid = AddToLayer(panelFlat, panelsLayerIndex, panelType);
-
-                _panelBounds.Add(panelBox);
-                categoryEntries.Add(new PanelCategoryEntry
+                categoryEntries = ArrangeDoorPanels(
+                    panels,
+                    panelType,
+                    leftAlignX,
+                    currentY,
+                    panelsLayerIndex,
+                    out maxXReached,
+                    out categoryMaxHeight);
+            }
+            else
+            {
+                for (int panelIndex = 0; panelIndex < panels.Count; panelIndex++)
                 {
-                    BBox = panelBox,
-                    PanelId = panelGuid,
-                    Letter = string.Empty
-                });
+                    var panel = panels[panelIndex];
+                    var panelFlat = FlattenPanel(panel.Geometry, panelType);
+                    var panelBox = panelFlat.GetBoundingBox(true);
 
-                currentX = panelBox.Max.X;
+                    var panelMoveX = currentX - panelBox.Min.X;
+                    var panelMoveY = currentY - panelBox.Max.Y;
 
-                double panelHeight = panelBox.Max.Y - panelBox.Min.Y;
-                categoryMaxHeight = Math.Max(categoryMaxHeight, panelHeight);
+                    panelFlat.Transform(Transform.Translation(panelMoveX, panelMoveY, 0));
+                    panelBox = panelFlat.GetBoundingBox(true);
+
+                    var panelGuid = AddToLayer(panelFlat, panelsLayerIndex, panelType);
+
+                    _panelBounds.Add(panelBox);
+                    categoryEntries.Add(new PanelCategoryEntry
+                    {
+                        BBox = panelBox,
+                        PanelId = panelGuid,
+                        Letter = string.Empty
+                    });
+
+                    currentX = panelBox.Max.X;
+
+                    double panelHeight = panelBox.Max.Y - panelBox.Min.Y;
+                    categoryMaxHeight = Math.Max(categoryMaxHeight, panelHeight);
+                }
+
+                maxXReached = currentX;
             }
 
             if (categoryEntries.Count > 1)
@@ -687,6 +704,310 @@ namespace FWBlueprintPlugin.Services
             return currentY;
         }
 
+        private List<PanelCategoryEntry> ArrangeDoorPanels(
+            List<RhinoObject> panels,
+            string panelType,
+            double leftAlignX,
+            double currentY,
+            int panelsLayerIndex,
+            out double maxXReached,
+            out double categoryMaxHeight)
+        {
+            const double ColumnOverlapRatioThreshold = 0.35;
+            const double FullSpanTolerance = 0.5;
+            const double TopAlignmentTolerance = 0.25;
+
+            var doorPanels = new List<DoorPanelInfo>();
+            foreach (var panel in panels)
+            {
+                var flattened = FlattenPanel(panel.Geometry, panelType);
+                var flattenedBox = flattened.GetBoundingBox(true);
+                var originalBox = panel.Geometry.GetBoundingBox(true);
+
+                doorPanels.Add(new DoorPanelInfo(panel, flattened, flattenedBox, originalBox));
+            }
+
+            if (doorPanels.Count == 0)
+            {
+                maxXReached = leftAlignX;
+                categoryMaxHeight = 0;
+                return new List<PanelCategoryEntry>();
+            }
+
+            SnapDoorPanelTops(doorPanels, TopAlignmentTolerance);
+            var columns = BuildDoorColumns(doorPanels, ColumnOverlapRatioThreshold);
+            double currentX = leftAlignX;
+            var entries = new List<PanelCategoryEntry>();
+
+            double groupTop = doorPanels.Max(p => p.SnappedTop);
+            double groupBottom = doorPanels.Min(p => p.OriginalBBox.Min.Z);
+            categoryMaxHeight = Math.Max(0, groupTop - groupBottom);
+
+            foreach (var column in columns.OrderBy(c => c.OriginalMinX))
+            {
+                double columnWidth = column.OriginalWidth;
+                if (columnWidth < 0.001)
+                {
+                    columnWidth = column.Panels.Max(p => p.FlattenedBBox.Max.X - p.FlattenedBBox.Min.X);
+                }
+
+                double columnTopY = column.Panels.Max(p => p.SnappedTop);
+
+                foreach (var panelInfo in column.Panels.OrderByDescending(p => p.OriginalBBox.Max.Z))
+                {
+                    var panelBox = panelInfo.FlattenedBBox;
+                    double relativeStart = panelInfo.OriginalBBox.Min.X - column.OriginalMinX;
+                    if (relativeStart < 0)
+                    {
+                        relativeStart = 0;
+                    }
+
+                    double targetMinX = currentX + relativeStart;
+                    double panelWidth = panelInfo.OriginalBBox.Max.X - panelInfo.OriginalBBox.Min.X;
+                    double widthDiff = Math.Abs(panelWidth - columnWidth);
+                    bool isTopPanel = Math.Abs(panelInfo.SnappedTop - columnTopY) <= TopAlignmentTolerance;
+
+                    if (isTopPanel && widthDiff <= FullSpanTolerance)
+                    {
+                        targetMinX = currentX;
+                    }
+
+                    double verticalOffset = groupTop - panelInfo.SnappedTop;
+                    double targetTopY = currentY - verticalOffset;
+
+                    double moveX = targetMinX - panelBox.Min.X;
+                    double moveY = targetTopY - panelBox.Max.Y;
+                    var translation = Transform.Translation(moveX, moveY, 0);
+
+                    panelInfo.Geometry.Transform(translation);
+                    panelBox = panelInfo.Geometry.GetBoundingBox(true);
+
+                    var panelGuid = AddToLayer(panelInfo.Geometry, panelsLayerIndex, panelType);
+                    _panelBounds.Add(panelBox);
+
+                    entries.Add(new PanelCategoryEntry
+                    {
+                        BBox = panelBox,
+                        PanelId = panelGuid,
+                        Letter = string.Empty
+                    });
+                }
+
+                currentX += columnWidth;
+            }
+
+            maxXReached = currentX;
+
+            if (entries.Count > 0)
+            {
+                double minY = entries.Min(e => e.BBox.Min.Y);
+                double maxY = entries.Max(e => e.BBox.Max.Y);
+                categoryMaxHeight = Math.Max(categoryMaxHeight, maxY - minY);
+            }
+
+            return entries;
+        }
+
+        private static void SnapDoorPanelTops(List<DoorPanelInfo> doorPanels, double tolerance)
+        {
+            var anchors = new List<double>();
+
+            foreach (var panel in doorPanels.OrderByDescending(p => p.OriginalBBox.Max.Z))
+            {
+                double top = panel.OriginalBBox.Max.Z;
+                double snapped = double.NaN;
+
+                foreach (var anchor in anchors)
+                {
+                    if (Math.Abs(anchor - top) <= tolerance)
+                    {
+                        snapped = anchor;
+                        break;
+                    }
+                }
+
+                if (double.IsNaN(snapped))
+                {
+                    anchors.Add(top);
+                    snapped = top;
+                }
+
+                panel.SnappedTop = snapped;
+            }
+        }
+
+        private static List<DoorColumn> BuildDoorColumns(List<DoorPanelInfo> doorPanels, double overlapThreshold)
+        {
+            const double VerticalStackingThreshold = 0.5;
+            const double MinOverlapAbsolute = 0.01;
+
+            int count = doorPanels.Count;
+            var disjoint = new DisjointSet(count);
+
+            for (int i = 0; i < count; i++)
+            {
+                for (int j = i + 1; j < count; j++)
+                {
+                    var a = doorPanels[i];
+                    var b = doorPanels[j];
+
+                    double overlap = GetOverlap(
+                        a.OriginalBBox.Min.X,
+                        a.OriginalBBox.Max.X,
+                        b.OriginalBBox.Min.X,
+                        b.OriginalBBox.Max.X);
+
+                    if (overlap <= MinOverlapAbsolute)
+                    {
+                        continue;
+                    }
+
+                    double minWidth = Math.Min(a.OriginalWidth, b.OriginalWidth);
+                    if (minWidth < 0.001)
+                    {
+                        continue;
+                    }
+
+                    double ratio = overlap / minWidth;
+                    double verticalDelta = Math.Abs(a.OriginalBBox.Center.Z - b.OriginalBBox.Center.Z);
+                    if (ratio < overlapThreshold)
+                    {
+                        continue;
+                    }
+
+                    if (verticalDelta <= VerticalStackingThreshold)
+                    {
+                        continue;
+                    }
+
+                    disjoint.Union(i, j);
+                }
+            }
+
+            var columnMap = new Dictionary<int, DoorColumn>();
+            for (int i = 0; i < count; i++)
+            {
+                int root = disjoint.Find(i);
+                if (!columnMap.TryGetValue(root, out var column))
+                {
+                    column = new DoorColumn(doorPanels[i]);
+                    columnMap[root] = column;
+                }
+                else
+                {
+                    column.Add(doorPanels[i]);
+                }
+            }
+
+            var ordered = columnMap.Values
+                .OrderBy(c => c.OriginalMinX)
+                .ToList();
+
+            return ordered;
+        }
+
+        private static double GetOverlap(double aMin, double aMax, double bMin, double bMax)
+        {
+            double overlapMin = Math.Max(aMin, bMin);
+            double overlapMax = Math.Min(aMax, bMax);
+            return Math.Max(0, overlapMax - overlapMin);
+        }
+
+        private sealed class DisjointSet
+        {
+            private readonly int[] _parent;
+            private readonly int[] _rank;
+
+            public DisjointSet(int size)
+            {
+                _parent = new int[size];
+                _rank = new int[size];
+                for (int i = 0; i < size; i++)
+                {
+                    _parent[i] = i;
+                    _rank[i] = 0;
+                }
+            }
+
+            public int Find(int value)
+            {
+                if (_parent[value] != value)
+                {
+                    _parent[value] = Find(_parent[value]);
+                }
+
+                return _parent[value];
+            }
+
+            public void Union(int a, int b)
+            {
+                int rootA = Find(a);
+                int rootB = Find(b);
+                if (rootA == rootB)
+                {
+                    return;
+                }
+
+                if (_rank[rootA] < _rank[rootB])
+                {
+                    _parent[rootA] = rootB;
+                }
+                else if (_rank[rootA] > _rank[rootB])
+                {
+                    _parent[rootB] = rootA;
+                }
+                else
+                {
+                    _parent[rootB] = rootA;
+                    _rank[rootA]++;
+                }
+            }
+        }
+
+        private sealed class DoorPanelInfo
+        {
+            public DoorPanelInfo(RhinoObject source, GeometryBase geometry, BoundingBox flattened, BoundingBox original)
+            {
+                Source = source;
+                Geometry = geometry;
+                FlattenedBBox = flattened;
+                OriginalBBox = original;
+                SnappedTop = original.Max.Z;
+            }
+
+            public RhinoObject Source { get; }
+            public GeometryBase Geometry { get; }
+            public BoundingBox FlattenedBBox { get; }
+            public BoundingBox OriginalBBox { get; }
+            public double OriginalWidth => OriginalBBox.Max.X - OriginalBBox.Min.X;
+            public double SnappedTop { get; set; }
+        }
+
+        private sealed class DoorColumn
+        {
+            private readonly List<DoorPanelInfo> _panels = new List<DoorPanelInfo>();
+
+            public DoorColumn(DoorPanelInfo initialPanel)
+            {
+                OriginalMinX = initialPanel.OriginalBBox.Min.X;
+                OriginalMaxX = initialPanel.OriginalBBox.Max.X;
+                _panels.Add(initialPanel);
+            }
+
+            public IReadOnlyList<DoorPanelInfo> Panels => _panels;
+            public double OriginalMinX { get; private set; }
+            public double OriginalMaxX { get; private set; }
+            public double OriginalWidth => Math.Max(0, OriginalMaxX - OriginalMinX);
+
+            public void Add(DoorPanelInfo panel)
+            {
+                _panels.Add(panel);
+                OriginalMinX = Math.Min(OriginalMinX, panel.OriginalBBox.Min.X);
+                OriginalMaxX = Math.Max(OriginalMaxX, panel.OriginalBBox.Max.X);
+            }
+        }
+
+
         private void SwitchToTopViewportAndCenter()
         {
             try
@@ -768,9 +1089,7 @@ namespace FWBlueprintPlugin.Services
         {
             try
             {
-                var dimStyle = _doc.DimStyles.FindName("Furniture Dim - CG") ?? _doc.DimStyles.Current;
-                double targetHeight = 0.6;
-
+                var dimStyle = GetPanelMarkerDimStyle();
                 var plane = Plane.WorldXY;
                 plane.Origin = new Point3d(panelBox.Min.X + 0.75, panelBox.Max.Y - 1.25, 0);
 
@@ -779,8 +1098,13 @@ namespace FWBlueprintPlugin.Services
                     Plane = plane,
                     PlainText = letter,
                     Justification = TextJustification.MiddleLeft,
-                    TextHeight = targetHeight
+                    TextHeight = 0.6
                 };
+                if (dimStyle != null)
+                {
+                    textEntity.DimensionStyleId = dimStyle.Id;
+                    textEntity.TextHeight = dimStyle.TextHeight;
+                }
 
                 if (dimStyle != null)
                 {
@@ -832,10 +1156,76 @@ namespace FWBlueprintPlugin.Services
                     ColorSource = ObjectColorSource.ColorFromLayer
                 };
 
-                _doc.Objects.AddText(textEntity, attr);
+                var textGuid = _doc.Objects.AddText(textEntity, attr);
+                if (textGuid != Guid.Empty && _doc.Objects.FindId(textGuid) is TextObject textObject && textObject.Geometry is TextEntity createdText)
+                {
+                    createdText.TextHeight = dimStyle?.TextHeight ?? 0.6;
+                    if (dimStyle != null)
+                    {
+                        createdText.DimensionStyleId = dimStyle.Id;
+                    }
+                    createdText.DimensionScale = 1.0;
+                    textObject.CommitChanges();
+                }
             }
             catch
             {
+            }
+        }
+
+        private DimensionStyle GetPanelMarkerDimStyle()
+        {
+            const string styleName = "Panel Marker Label";
+            if (_panelMarkerDimStyleIndex >= 0 && _panelMarkerDimStyleIndex < _doc.DimStyles.Count)
+            {
+                var existing = _doc.DimStyles[_panelMarkerDimStyleIndex];
+                if (existing != null)
+                {
+                    EnsureMarkerStyleSettings(existing);
+                    return existing;
+                }
+            }
+
+            for (int i = 0; i < _doc.DimStyles.Count; i++)
+            {
+                if (string.Equals(_doc.DimStyles[i].Name, styleName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _panelMarkerDimStyleIndex = i;
+                    EnsureMarkerStyleSettings(_doc.DimStyles[i]);
+                    return _doc.DimStyles[i];
+                }
+            }
+
+            var source = BlueprintAnnotationDebug.ResolveDefaultStyle(_doc, "PanelArrangementService.GetPanelMarkerDimStyle")
+                         ?? _doc.DimStyles.Current
+                         ?? _doc.DimStyles[0];
+            int newIndex = _doc.DimStyles.Add(styleName);
+            var markerStyle = _doc.DimStyles[newIndex];
+            markerStyle.CopyFrom(source);
+            markerStyle.Name = styleName;
+            markerStyle.DimensionScale = 1.0;
+            markerStyle.TextHeight = 0.6;
+            _doc.DimStyles.Modify(markerStyle, newIndex, true);
+            _panelMarkerDimStyleIndex = newIndex;
+            return markerStyle;
+        }
+
+        private void EnsureMarkerStyleSettings(DimensionStyle style)
+        {
+            bool updated = false;
+            if (Math.Abs(style.TextHeight - 0.6) > 0.0001)
+            {
+                style.TextHeight = 0.6;
+                updated = true;
+            }
+            if (Math.Abs(style.DimensionScale - 1.0) > 0.0001)
+            {
+                style.DimensionScale = 1.0;
+                updated = true;
+            }
+            if (updated)
+            {
+                _doc.DimStyles.Modify(style, style.Index, true);
             }
         }
 

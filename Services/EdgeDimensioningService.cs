@@ -21,16 +21,24 @@ namespace FWBlueprintPlugin.Services
             _doc = doc ?? throw new ArgumentNullException(nameof(doc));
         }
 
+        private static readonly bool VerboseLogging = false;
+
         public void AddEdgeFeatureDimensions(Rectangle3d panelBBox, IList<EdgeFeature> features, int dimensionsLayerIndex)
         {
             if (features == null || features.Count == 0)
             {
-                RhinoApp.WriteLine("  No edge features to dimension");
+                if (VerboseLogging)
+                {
+                    RhinoApp.WriteLine("  No edge features to dimension");
+                }
                 return;
             }
 
-            RhinoApp.WriteLine(string.Empty);
-            RhinoApp.WriteLine("=== Adding Edge Feature Dimensions ===");
+            if (VerboseLogging)
+            {
+                RhinoApp.WriteLine(string.Empty);
+                RhinoApp.WriteLine("=== Adding Edge Feature Dimensions ===");
+            }
 
             var groupedByEdge = features
                 .GroupBy(f => f.EdgeName)
@@ -41,14 +49,17 @@ namespace FWBlueprintPlugin.Services
                 string edgeName = group.Key;
                 var orderedFeatures = group.OrderBy(f => f.StartPos).ToList();
 
-                RhinoApp.WriteLine($"[{edgeName}] {orderedFeatures.Count} feature(s)");
-                foreach (var feature in orderedFeatures)
+                if (VerboseLogging)
                 {
-                    RhinoApp.WriteLine(
-                        $"    • {feature.Type} | start={feature.StartPos:F3}\" end={feature.EndPos:F3}\" width={feature.Width:F3}\" depth={feature.Depth:F3}\" curved={feature.HasCurvature}");
-                }
+                    RhinoApp.WriteLine($"[{edgeName}] {orderedFeatures.Count} feature(s)");
+                    foreach (var feature in orderedFeatures)
+                    {
+                        RhinoApp.WriteLine(
+                            $"    • {feature.Type} | start={feature.StartPos:F3}\" end={feature.EndPos:F3}\" width={feature.Width:F3}\" depth={feature.Depth:F3}\" curved={feature.HasCurvature}");
+                    }
 
-                RhinoApp.WriteLine($"\n[{edgeName}] Dimensioning {orderedFeatures.Count} feature(s)...");
+                    RhinoApp.WriteLine($"\n[{edgeName}] Dimensioning {orderedFeatures.Count} feature(s)...");
+                }
 
                 var (edgeStart, edgeEnd, edgeDirection, perpendicular) = GetEdgeParameters(panelBBox, edgeName);
                 double edgeLength = edgeStart.DistanceTo(edgeEnd);
@@ -87,12 +98,12 @@ namespace FWBlueprintPlugin.Services
                 }
             }
 
-            RhinoApp.WriteLine("\n✓ Edge feature dimensioning complete");
+            RhinoApp.WriteLine($"[Edge Dimensions] Completed dimensioning {features.Count} feature(s) across {groupedByEdge.Count()} edge(s).");
         }
 
         private void AddEdgeHoleDimensions(Rectangle3d bbox, IList<EdgeFeature> holes, string edgeName, double edgeLength, int dimensionsLayerIndex)
         {
-            RhinoApp.WriteLine("  Strategy: Edge Holes (dimension to centers, inset onto panel)");
+            LogVerbose("  Strategy: Edge Holes (dimension to centers, inset onto panel)");
 
             var (edgeStart, _, edgeDirection, perpendicular) = GetEdgeParameters(bbox, edgeName);
 
@@ -118,12 +129,15 @@ namespace FWBlueprintPlugin.Services
             ValidateSegmentSum(edgeLength, segments.Sum());
             CreateRunningDimensionLine(edgeStart, edgeDirection, perpendicular, segments, edgeName, dimensionsLayerIndex);
 
-            LogSegments(segments, edgeLength, segmentLabels);
+            if (VerboseLogging)
+            {
+                LogSegments(segments, edgeLength, segmentLabels);
+            }
         }
 
         private void AddEdgeSlotDimensions(Rectangle3d bbox, IList<EdgeFeature> slots, string edgeName, double edgeLength, int dimensionsLayerIndex)
         {
-            RhinoApp.WriteLine("  Strategy: Edge Slots/Notches (running cumulative, offset away from panel)");
+            LogVerbose("  Strategy: Edge Slots/Notches (running cumulative, offset away from panel)");
 
             var (edgeStart, _, edgeDirection, perpendicular) = GetEdgeParameters(bbox, edgeName);
             perpendicular = -perpendicular;
@@ -155,17 +169,20 @@ namespace FWBlueprintPlugin.Services
             ValidateSegmentSum(edgeLength, segments.Sum());
             CreateRunningDimensionLine(edgeStart, edgeDirection, perpendicular, segments, edgeName, dimensionsLayerIndex);
 
-            LogSegments(segments, edgeLength, segmentLabels);
+            if (VerboseLogging)
+            {
+                LogSegments(segments, edgeLength, segmentLabels);
+            }
         }
 
         private void AddMixedEdgeDimensions(Rectangle3d bbox, IList<EdgeFeature> features, string edgeName, double edgeLength, int dimensionsLayerIndex)
         {
-            RhinoApp.WriteLine("  Strategy: Mixed (holes + slots, running cumulative, offset away from panel)");
+            LogVerbose("  Strategy: Mixed (holes + slots, running cumulative, offset away from panel)");
 
             bool hasSlots = features.Any(IsSlotFeature);
             if (!hasSlots)
             {
-                RhinoApp.WriteLine("  ⚠ Correcting: Only holes detected, using hole-only strategy");
+                LogVerbose("  Correcting: Only holes detected, using hole-only strategy");
                 AddEdgeHoleDimensions(bbox, features, edgeName, edgeLength, dimensionsLayerIndex);
                 return;
             }
@@ -216,7 +233,12 @@ namespace FWBlueprintPlugin.Services
             const double dimOffset = 3.0;
             Point3d dimLineStart = edgeStart + perpendicular * dimOffset;
 
-            DimensionStyle dimStyle = _doc.DimStyles.FindName("Furniture Dim - CG") ?? _doc.DimStyles.Current;
+            DimensionStyle dimStyle = ResolveBlueprintStyle("CreateRunningDimensionLine");
+            if (dimStyle == null)
+            {
+                RhinoApp.WriteLine("[Blueprint Styles][EdgeDimensioningService.CreateRunningDimensionLine] Unable to resolve dimension style; skipping dimension chain.");
+                return;
+            }
 
             var attr = new ObjectAttributes
             {
@@ -240,6 +262,15 @@ namespace FWBlueprintPlugin.Services
                 double dimZ = edgeStart.Z + 0.01;
                 var dimPlane = new Plane(new Point3d(0, 0, dimZ), Vector3d.ZAxis);
 
+                BlueprintAnnotationDebug.LogDimensionRequest(
+                    "EdgeDimensioningService.CreateRunningDimensionLine",
+                    $"Chain Segment {i}",
+                    dimStyle,
+                    pt1,
+                    pt2,
+                    dimLinePt,
+                    attr.LayerIndex);
+
                 LinearDimension dim = isVertical
                     ? LinearDimension.Create(
                         AnnotationType.Rotated,
@@ -259,6 +290,7 @@ namespace FWBlueprintPlugin.Services
                         pt2,
                         dimLinePt,
                         0);
+                ApplyDimensionStyle(dim, dimStyle);
 
                 if (dim != null)
                 {
@@ -271,10 +303,15 @@ namespace FWBlueprintPlugin.Services
 
         private void AddEdgeNotchDimensions(Rectangle3d bbox, IList<EdgeFeature> notches, string edgeName, double edgeLength, int dimensionsLayerIndex)
         {
-            RhinoApp.WriteLine("  Strategy: Edge Notches (individual width/depth + nearest corner)");
+            LogVerbose("  Strategy: Edge Notches (individual width/depth + nearest corner)");
 
             var (edgeStart, edgeEnd, edgeDirection, perpendicular) = GetEdgeParameters(bbox, edgeName);
-            var dimStyle = _doc.DimStyles.FindName("Furniture Dim - CG") ?? _doc.DimStyles.Current;
+            var dimStyle = ResolveBlueprintStyle("AddEdgeNotchDimensions");
+            if (dimStyle == null)
+            {
+                RhinoApp.WriteLine("[Blueprint Styles][EdgeDimensioningService.AddEdgeNotchDimensions] Unable to resolve dimension style; skipping notch dimensions.");
+                return;
+            }
             var attr = new ObjectAttributes
             {
                 LayerIndex = dimensionsLayerIndex,
@@ -322,9 +359,19 @@ namespace FWBlueprintPlugin.Services
             var dimPlane = new Plane(new Point3d(0, 0, dimZ), Vector3d.ZAxis);
             bool isVertical = edgeName.Equals("LEFT", StringComparison.OrdinalIgnoreCase) || edgeName.Equals("RIGHT", StringComparison.OrdinalIgnoreCase);
 
+            BlueprintAnnotationDebug.LogDimensionRequest(
+                "EdgeDimensioningService.AddLinearDimension",
+                edgeName,
+                dimStyle,
+                pt1,
+                pt2,
+                dimLinePoint,
+                attr?.LayerIndex ?? -1);
+
             LinearDimension dim = isVertical
                 ? LinearDimension.Create(AnnotationType.Rotated, dimStyle, dimPlane, Vector3d.XAxis, pt1, pt2, dimLinePoint, Math.PI / 2.0)
                 : LinearDimension.Create(AnnotationType.Aligned, dimStyle, dimPlane, edgeDirection, pt1, pt2, dimLinePoint, 0);
+            ApplyDimensionStyle(dim, dimStyle);
 
             if (dim != null)
             {
@@ -338,12 +385,32 @@ namespace FWBlueprintPlugin.Services
             var dimPlane = new Plane(new Point3d(0, 0, dimZ), Vector3d.ZAxis);
             Vector3d axis = Math.Abs(measurementDirection.Y) > Math.Abs(measurementDirection.X) ? Vector3d.YAxis : Vector3d.XAxis;
 
+            BlueprintAnnotationDebug.LogDimensionRequest(
+                "EdgeDimensioningService.AddPerpendicularDimension",
+                "Perpendicular",
+                dimStyle,
+                pt1,
+                pt2,
+                dimLinePoint,
+                attr?.LayerIndex ?? -1);
+
             LinearDimension dim = LinearDimension.Create(AnnotationType.Aligned, dimStyle, dimPlane, axis, pt1, pt2, dimLinePoint, 0);
+            ApplyDimensionStyle(dim, dimStyle);
 
             if (dim != null)
             {
                 _doc.Objects.AddLinearDimension(dim, attr);
             }
+        }
+
+        private static void ApplyDimensionStyle(AnnotationBase dimension, DimensionStyle style)
+        {
+            if (dimension == null || style == null)
+            {
+                return;
+            }
+
+            dimension.DimensionStyleId = style.Id;
         }
 
         private static bool IsHoleFeature(EdgeFeature feature)
@@ -418,20 +485,33 @@ namespace FWBlueprintPlugin.Services
             }
         }
 
+        private DimensionStyle ResolveBlueprintStyle(string caller)
+        {
+            return BlueprintAnnotationDebug.ResolveDefaultStyle(_doc, $"EdgeDimensioningService.{caller}");
+        }
+
         private static void ValidateSegmentSum(double edgeLength, double sum)
         {
             if (Math.Abs(sum - edgeLength) > 0.01)
             {
-                RhinoApp.WriteLine($"  ⚠ WARNING: Dimension sum {sum:F3}\" ≠ edge length {edgeLength:F3}\"");
+                LogVerbose($"  WARNING: Dimension sum {sum:F3}\" vs edge length {edgeLength:F3}\"");
             }
         }
 
         private static void LogSegments(IEnumerable<double> segments, double edgeLength, IEnumerable<string> labels)
         {
             var segmentList = segments.ToList();
-            RhinoApp.WriteLine($"  Segments: {string.Join(" + ", labels)}");
+            LogVerbose($"  Segments: {string.Join(" + ", labels)}");
             double sum = segmentList.Sum();
-            RhinoApp.WriteLine($"  Total: {FormatDimension(sum, 5)} (edge: {FormatDimension(edgeLength, 5)})");
+            LogVerbose($"  Total: {FormatDimension(sum, 5)} (edge: {FormatDimension(edgeLength, 5)})");
+        }
+
+        private static void LogVerbose(string message)
+        {
+            if (VerboseLogging)
+            {
+                RhinoApp.WriteLine(message);
+            }
         }
     }
 }

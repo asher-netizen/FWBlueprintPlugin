@@ -28,6 +28,9 @@ namespace FWBlueprintPlugin
 
             try
             {
+                var annotationStyleProvider = new BlueprintAnnotationStyleProvider(doc);
+                annotationStyleProvider.EnsureStyles();
+
                 var selectionService = new PanelSelectionService(doc);
 
                 var topComponents = selectionService.SelectTopComponents();

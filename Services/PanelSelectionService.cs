@@ -30,7 +30,7 @@ namespace FWBlueprintPlugin.Services
             go.SubObjectSelect = false;
             go.DisablePreSelect();
             go.DeselectAllBeforePostSelect = false;
-            go.GroupSelect = true;
+            go.GroupSelect = false;
             go.EnableClearObjectsOnEntry(false);
 
             go.GetMultiple(1, 0);
@@ -169,7 +169,7 @@ namespace FWBlueprintPlugin.Services
             go.SubObjectSelect = false;
             go.DisablePreSelect();
             go.DeselectAllBeforePostSelect = false;
-            go.GroupSelect = true;
+            go.GroupSelect = false;
             go.EnableClearObjectsOnEntry(false);
 
             go.GetMultiple(1, 0);

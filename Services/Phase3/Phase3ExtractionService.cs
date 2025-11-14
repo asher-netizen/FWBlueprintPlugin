@@ -98,11 +98,7 @@ namespace FWBlueprintPlugin.Services.Phase3
                 bool skipEdgeFeatures = category.Equals("Door", StringComparison.OrdinalIgnoreCase);
                 List<EdgeFeature> edgeFeatures = new List<EdgeFeature>();
 
-                if (skipEdgeFeatures)
-                {
-                    RhinoApp.WriteLine($"[Edge Detection v2] Skipping edge detection/dimensioning for door panel '{panelDisplayName}'.");
-                }
-                else
+                if (!skipEdgeFeatures)
                 {
                     edgeFeatures = _edgeFeatureDetectionService.DimensionEdgeFeatures(
                         bbox,
@@ -158,11 +154,6 @@ namespace FWBlueprintPlugin.Services.Phase3
                     result.ChordCutouts.Add((obj, chordCutouts));
                 }
 
-                string featureSummary = (edgeFeatures.Count == 0 && interiorCutouts.Count == 0)
-                    ? "Clean ✓"
-                    : $"{edgeFeatures.Count} edge, {interiorCutouts.Count} interior → Dimensioned ✓";
-
-                RhinoApp.WriteLine($"{panelDisplayName} ({bbox.Width:F2}\" × {bbox.Height:F2}\"): {featureSummary}");
             }
 
             SetLayerVisibilities(layerContext);
@@ -435,11 +426,15 @@ namespace FWBlueprintPlugin.Services.Phase3
             {
                 var panel = group.Key;
                 var panelBBox = panel.Geometry.GetBoundingBox(true);
-                var dimStyle = doc.DimStyles.Current;
-                var attr = new ObjectAttributes { LayerIndex = dimsLayerIdx };
+                var dimStyle = ResolveBlueprintStyle(doc, "AddChordDimensions");
+                if (dimStyle == null)
+                {
+                    RhinoApp.WriteLine("[Blueprint Styles][Phase3ExtractionService.AddChordDimensions] Unable to resolve blueprint dimension style; skipping chord dimensions.");
+                    continue;
+                }
 
                 var edgeFeatures = new List<(Brep Cutout, string Type, string EdgeSide)>();
-                var interior = new List<(Brep Cutout, string Type, string EdgeSide)>();
+                var interior = new List<InteriorFeatureInfo>();
 
                 foreach (var (_, cutout) in group)
                 {
@@ -463,16 +458,30 @@ namespace FWBlueprintPlugin.Services.Phase3
                         }
 
                         var (fbType, fbSide) = ClassifyChordTypeWithEdge(cutout, panelBBox, panelBoundary, tol);
-                        if (fbSide != null) edgeFeatures.Add((cutout, fbType, fbSide));
-                        else interior.Add((cutout, fbType, null));
+                        if (fbSide != null)
+                        {
+                            edgeFeatures.Add((cutout, fbType, fbSide));
+                        }
+                        else
+                        {
+                            var featureInfo = AnalyzeInteriorFeature(cutout, tol);
+                            if (featureInfo.Kind != InteriorFeatureKind.Unknown)
+                            {
+                                interior.Add(featureInfo);
+                            }
+                        }
                     }
                 }
 
                 if (edgeFeatures.Count > 0)
+                {
                     AddPerFeatureEdgeDimensions(doc, dimsLayerIdx, edgeFeatures, panelBBox, tol, dimStyle);
+                }
 
-                foreach (var (cutout, type, _) in interior)
-                    AddInteriorDimensions(doc, dimsLayerIdx, cutout, type, panelBBox, tol, dimStyle, attr, Plane.WorldXY);
+                foreach (var info in interior)
+                {
+                    DimensionInteriorFeature(doc, dimsLayerIdx, info, panelBBox, dimStyle);
+                }
             }
         }
 
@@ -523,8 +532,16 @@ namespace FWBlueprintPlugin.Services.Phase3
 
                     var mid = (cornerOnEdge + center) / 2.0;
                     var dimLinePoint = mid + offsetDir * offset;
-                    var dim = LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, dimDir, cornerOnEdge, center, dimLinePoint, 0);
-                    if (dim != null) doc.Objects.AddLinearDimension(dim, attr);
+                    var dim = ApplyDimStyle(LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, dimDir, cornerOnEdge, center, dimLinePoint, 0), dimStyle);
+                    BlueprintAnnotationDebug.LogDimensionRequest(
+                        "Phase3ExtractionService.AddChordDimensions",
+                        "CornerToCenter",
+                        dimStyle,
+                        cornerOnEdge,
+                        center,
+                        dimLinePoint,
+                        attr?.LayerIndex ?? -1);
+                    TryAddDimension(doc, attr, dim, "Phase3.AddChordDimensions.CornerToCenter");
                     continue;
                 }
 
@@ -543,14 +560,30 @@ namespace FWBlueprintPlugin.Services.Phase3
                 {
                     var mid = (pCorner + mStart) / 2.0;
                     var dimLinePoint = mid + offsetDir * offset;
-                    var d = LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, dimDir, pCorner, mStart, dimLinePoint, 0);
-                    if (d != null) doc.Objects.AddLinearDimension(d, attr);
+                    var d = ApplyDimStyle(LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, dimDir, pCorner, mStart, dimLinePoint, 0), dimStyle);
+                    BlueprintAnnotationDebug.LogDimensionRequest(
+                        "Phase3ExtractionService.AddChordDimensions",
+                        "CornerToMouth",
+                        dimStyle,
+                        pCorner,
+                        mStart,
+                        dimLinePoint,
+                        attr?.LayerIndex ?? -1);
+                    TryAddDimension(doc, attr, d, "Phase3.AddChordDimensions.CornerToMouth");
                 }
                 {
                     var mid = (mStart + mEnd) / 2.0;
                     var dimLinePoint = mid + offsetDir * offset;
-                    var d = LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, dimDir, mStart, mEnd, dimLinePoint, 0);
-                    if (d != null) doc.Objects.AddLinearDimension(d, attr);
+                    var d = ApplyDimStyle(LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, dimDir, mStart, mEnd, dimLinePoint, 0), dimStyle);
+                    BlueprintAnnotationDebug.LogDimensionRequest(
+                        "Phase3ExtractionService.AddChordDimensions",
+                        "MouthWidth",
+                        dimStyle,
+                        mStart,
+                        mEnd,
+                        dimLinePoint,
+                        attr?.LayerIndex ?? -1);
+                    TryAddDimension(doc, attr, d, "Phase3.AddChordDimensions.MouthWidth");
                 }
 
                 if (type == "Notch")
@@ -562,16 +595,32 @@ namespace FWBlueprintPlugin.Services.Phase3
                     var depthMid = new Point3d((mouthMid.X + deepest.X) * 0.5, (mouthMid.Y + deepest.Y) * 0.5, 0);
                     var perpDir = isHorizontal ? Vector3d.YAxis : Vector3d.XAxis;
                     var depthDimPoint = depthMid + (perpDir * (offset * 0.9));
-                    var depthDim = LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, perpDir, mouthMid, deepest, depthDimPoint, 0);
-                    if (depthDim != null) doc.Objects.AddLinearDimension(depthDim, attr);
+                    var depthDim = ApplyDimStyle(LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, perpDir, mouthMid, deepest, depthDimPoint, 0), dimStyle);
+                    BlueprintAnnotationDebug.LogDimensionRequest(
+                        "Phase3ExtractionService.AddChordDimensions",
+                        "NotchDepth",
+                        dimStyle,
+                        mouthMid,
+                        deepest,
+                        depthDimPoint,
+                        attr?.LayerIndex ?? -1);
+                    TryAddDimension(doc, attr, depthDim, "Phase3.AddChordDimensions.NotchDepth");
 
                     bool flushToCorner = (pCorner.DistanceTo(mStart) < tol) || (pCorner.DistanceTo(mEnd) < tol);
                     if (!flushToCorner)
                     {
                         var insetMid = new Point3d((pCorner.X + mStart.X) * 0.5, (pCorner.Y + mStart.Y) * 0.5, 0);
                         var insetPoint = insetMid + offsetDir * (offset * 1.2);
-                        var insetDim = LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, dimDir, pCorner, mStart, insetPoint, 0);
-                        if (insetDim != null) doc.Objects.AddLinearDimension(insetDim, attr);
+                        var insetDim = ApplyDimStyle(LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, dimDir, pCorner, mStart, insetPoint, 0), dimStyle);
+                        BlueprintAnnotationDebug.LogDimensionRequest(
+                            "Phase3ExtractionService.AddChordDimensions",
+                            "Inset",
+                            dimStyle,
+                            pCorner,
+                            mStart,
+                            insetPoint,
+                            attr?.LayerIndex ?? -1);
+                        TryAddDimension(doc, attr, insetDim, "Phase3.AddChordDimensions.Inset");
                     }
                 }
             }
@@ -734,7 +783,8 @@ namespace FWBlueprintPlugin.Services.Phase3
             return (type, edgeSide);
         }
 
-        private void AddInteriorDimensions(RhinoDoc doc, int dimsLayerIdx, Brep cutout, string type,
+        [Obsolete("Legacy interior pass-through dimensioning. Use DimensionInteriorFeature instead.")]
+        private void AddInteriorDimensionsV1(RhinoDoc doc, int dimsLayerIdx, Brep cutout, string type,
             BoundingBox panelBBox, double tol, DimensionStyle dimStyle, ObjectAttributes attr, Plane dimPlane)
         {
             var massProp = AreaMassProperties.Compute(cutout);
@@ -767,17 +817,345 @@ namespace FWBlueprintPlugin.Services.Phase3
             Point3d xStart = fromLeft ? new Point3d(panelBBox.Min.X, center.Y, 0) : new Point3d(panelBBox.Max.X, center.Y, 0);
             Point3d xTextPos = new Point3d((xStart.X + center.X) / 2.0, (xStart.Y + center.Y) / 2.0, 0);
 
-            var xDim = LinearDimension.Create(AnnotationType.Aligned, dimStyle, dimPlane, Vector3d.XAxis, xStart, center, xTextPos, 0);
-            xDim.PlainText = FormatDimension(fromLeft ? xDistLeft : xDistRight, 4);
-            doc.Objects.AddLinearDimension(xDim, attr);
+            var xDim = ApplyDimStyle(LinearDimension.Create(AnnotationType.Aligned, dimStyle, dimPlane, Vector3d.XAxis, xStart, center, xTextPos, 0), dimStyle);
+            if (xDim != null)
+            {
+                xDim.PlainText = FormatDimension(fromLeft ? xDistLeft : xDistRight, 4);
+                BlueprintAnnotationDebug.LogDimensionRequest(
+                    "Phase3ExtractionService.AddInteriorHoleDimensions",
+                    "HoleX",
+                    dimStyle,
+                    xStart,
+                    center,
+                    xTextPos,
+                    attr?.LayerIndex ?? -1);
+                TryAddDimension(doc, attr, xDim, "Phase3.AddInteriorHoleDimensions.HoleX");
+            }
 
             bool fromBottom = yDistBottom < yDistTop;
             Point3d yStart = fromBottom ? new Point3d(center.X, panelBBox.Min.Y, 0) : new Point3d(center.X, panelBBox.Max.Y, 0);
             Point3d yTextPos = new Point3d((yStart.X + center.X) / 2.0, (yStart.Y + center.Y) / 2.0, 0);
 
-            var yDim = LinearDimension.Create(AnnotationType.Aligned, dimStyle, dimPlane, Vector3d.YAxis, yStart, center, yTextPos, 0);
-            yDim.PlainText = FormatDimension(fromBottom ? yDistBottom : yDistTop, 4);
-            doc.Objects.AddLinearDimension(yDim, attr);
+            var yDim = ApplyDimStyle(LinearDimension.Create(AnnotationType.Aligned, dimStyle, dimPlane, Vector3d.YAxis, yStart, center, yTextPos, 0), dimStyle);
+            if (yDim != null)
+            {
+                yDim.PlainText = FormatDimension(fromBottom ? yDistBottom : yDistTop, 4);
+                BlueprintAnnotationDebug.LogDimensionRequest(
+                    "Phase3ExtractionService.AddInteriorHoleDimensions",
+                    "HoleY",
+                    dimStyle,
+                    yStart,
+                    center,
+                    yTextPos,
+                    attr?.LayerIndex ?? -1);
+                TryAddDimension(doc, attr, yDim, "Phase3.AddInteriorHoleDimensions.HoleY");
+            }
+        }
+
+        private void DimensionInteriorFeature(
+            RhinoDoc doc,
+            int dimsLayerIdx,
+            InteriorFeatureInfo feature,
+            BoundingBox panelBBox,
+            DimensionStyle dimStyle)
+        {
+            switch (feature.Kind)
+            {
+                case InteriorFeatureKind.Hole:
+                    DimensionInteriorHole(doc, dimsLayerIdx, feature, panelBBox, dimStyle);
+                    break;
+                case InteriorFeatureKind.Slot:
+                    DimensionInteriorSlot(doc, dimsLayerIdx, feature, panelBBox, dimStyle);
+                    break;
+            }
+        }
+
+        private void DimensionInteriorHole(
+            RhinoDoc doc,
+            int dimsLayerIdx,
+            InteriorFeatureInfo feature,
+            BoundingBox panelBBox,
+            DimensionStyle dimStyle)
+        {
+            const double CornerThreshold = 2.0625;
+
+            var attr = new ObjectAttributes { LayerIndex = dimsLayerIdx };
+            var plane = Plane.WorldXY;
+            var center = new Point3d(feature.Center.X, feature.Center.Y, 0);
+
+            double left = center.X - panelBBox.Min.X;
+            double right = panelBBox.Max.X - center.X;
+            double bottom = center.Y - panelBBox.Min.Y;
+            double top = panelBBox.Max.Y - center.Y;
+
+            if (Math.Min(left, right) <= CornerThreshold && Math.Min(bottom, top) <= CornerThreshold)
+            {
+                return;
+            }
+
+            bool fromLeft = left <= right;
+            var xStart = new Point3d(fromLeft ? panelBBox.Min.X : panelBBox.Max.X, center.Y, 0);
+            var xDim = ApplyDimStyle(LinearDimension.Create(
+                AnnotationType.Rotated,
+                dimStyle,
+                plane,
+                Vector3d.YAxis,
+                xStart,
+                center,
+                center,
+                0), dimStyle);
+            BlueprintAnnotationDebug.LogDimensionRequest(
+                "Phase3ExtractionService.AddInteriorSlotDimensions",
+                "SlotXCenter",
+                dimStyle,
+                xStart,
+                center,
+                center,
+                attr?.LayerIndex ?? -1);
+            TryAddDimension(doc, attr, xDim, "Phase3.AddInteriorSlotDimensions.SlotXCenter");
+
+            bool fromBottom = bottom <= top;
+            var yStart = new Point3d(center.X, fromBottom ? panelBBox.Min.Y : panelBBox.Max.Y, 0);
+            var yDim = ApplyDimStyle(LinearDimension.Create(
+                AnnotationType.Rotated,
+                dimStyle,
+                plane,
+                Vector3d.XAxis,
+                yStart,
+                center,
+                center,
+                Math.PI / 2.0), dimStyle);
+            BlueprintAnnotationDebug.LogDimensionRequest(
+                "Phase3ExtractionService.AddInteriorSlotDimensions",
+                "SlotYCenter",
+                dimStyle,
+                yStart,
+                center,
+                center,
+                attr?.LayerIndex ?? -1);
+            TryAddDimension(doc, attr, yDim, "Phase3.AddInteriorSlotDimensions.SlotYCenter");
+        }
+
+        private void DimensionInteriorSlot(
+            RhinoDoc doc,
+            int dimsLayerIdx,
+            InteriorFeatureInfo feature,
+            BoundingBox panelBBox,
+            DimensionStyle dimStyle)
+        {
+            var attr = new ObjectAttributes { LayerIndex = dimsLayerIdx };
+            var plane = Plane.WorldXY;
+
+            double slotMinX = feature.Bounds.Min.X;
+            double slotMaxX = feature.Bounds.Max.X;
+            double slotMinY = feature.Bounds.Min.Y;
+            double slotMaxY = feature.Bounds.Max.Y;
+            double slotCenterX = (slotMinX + slotMaxX) / 2.0;
+            double slotCenterY = (slotMinY + slotMaxY) / 2.0;
+
+            double leftGap = slotMinX - panelBBox.Min.X;
+            double rightGap = panelBBox.Max.X - slotMaxX;
+            double bottomGap = slotMinY - panelBBox.Min.Y;
+            double topGap = panelBBox.Max.Y - slotMaxY;
+            RhinoApp.WriteLine($"[SlotHeight] leftGap={leftGap:F3}, rightGap={rightGap:F3}, topGap={topGap:F3}, bottomGap={bottomGap:F3}");
+
+            bool fromLeft = leftGap <= rightGap;
+            var xStart = new Point3d(fromLeft ? panelBBox.Min.X : panelBBox.Max.X, slotCenterY, 0);
+            var xEnd = new Point3d(fromLeft ? slotMinX : slotMaxX, slotCenterY, 0);
+            var xLinePoint = new Point3d((xStart.X + xEnd.X) / 2.0, slotCenterY, 0);
+            var xDim = ApplyDimStyle(LinearDimension.Create(AnnotationType.Aligned, dimStyle, plane, Vector3d.XAxis, xStart, xEnd, xLinePoint, 0), dimStyle);
+            BlueprintAnnotationDebug.LogDimensionRequest(
+                "Phase3ExtractionService.AddSlotOffsetDimensions",
+                "SlotOffsetX",
+                dimStyle,
+                xStart,
+                xEnd,
+                xLinePoint,
+                attr?.LayerIndex ?? -1);
+            TryAddDimension(doc, attr, xDim, "Phase3.AddSlotOffsetDimensions.X");
+
+            bool fromBottom = bottomGap <= topGap;
+            var yStart = new Point3d(slotCenterX, fromBottom ? panelBBox.Min.Y : panelBBox.Max.Y, 0);
+            var yEnd = new Point3d(slotCenterX, fromBottom ? slotMinY : slotMaxY, 0);
+            var yLinePoint = new Point3d(slotCenterX, (yStart.Y + yEnd.Y) / 2.0, 0);
+            var yDim = ApplyDimStyle(LinearDimension.Create(
+                AnnotationType.Rotated,
+                dimStyle,
+                plane,
+                Vector3d.XAxis,
+                yStart,
+                yEnd,
+                yLinePoint,
+                Math.PI / 2.0), dimStyle);
+            BlueprintAnnotationDebug.LogDimensionRequest(
+                "Phase3ExtractionService.AddSlotOffsetDimensions",
+                "SlotOffsetY",
+                dimStyle,
+                yStart,
+                yEnd,
+                yLinePoint,
+                attr?.LayerIndex ?? -1);
+            TryAddDimension(doc, attr, yDim, "Phase3.AddSlotOffsetDimensions.Y");
+
+            double widthOffset = topGap <= bottomGap ? -3.0 : 3.0;
+            bool widthOffsetBelow = widthOffset < 0;
+            var widthStart = new Point3d(slotMinX, slotCenterY, 0);
+            var widthEnd = new Point3d(slotMaxX, slotCenterY, 0);
+            var widthLinePoint = new Point3d((slotMinX + slotMaxX) / 2.0, slotCenterY + widthOffset, 0);
+            var widthDim = ApplyDimStyle(LinearDimension.Create(
+                AnnotationType.Rotated,
+                dimStyle,
+                plane,
+                Vector3d.YAxis,
+                widthStart,
+                widthEnd,
+                widthLinePoint,
+                0), dimStyle);
+            BlueprintAnnotationDebug.LogDimensionRequest(
+                "Phase3ExtractionService.AddSlotSizeDimensions",
+                "SlotWidth",
+                dimStyle,
+                widthStart,
+                widthEnd,
+                widthLinePoint,
+                attr?.LayerIndex ?? -1);
+            TryAddDimension(doc, attr, widthDim, "Phase3.AddSlotSizeDimensions.Width");
+
+            bool nearestLeftEdge = leftGap <= rightGap;
+            double slotAnchorX = nearestLeftEdge ? slotMaxX : slotMinX;
+            double dimensionX = slotAnchorX + (nearestLeftEdge ? 3.0 : -3.0);
+            double heightLabelOffset = widthOffsetBelow ? 3.0 : -3.0;
+            RhinoApp.WriteLine($"[SlotHeight] nearestLeftEdge={nearestLeftEdge}, widthOffset={widthOffset:F3}, widthOffsetBelow={widthOffsetBelow}, slotAnchorX={slotAnchorX:F3}, dimensionX={dimensionX:F3}, labelOffset={heightLabelOffset:F3}");
+
+            var heightStart = new Point3d(slotAnchorX, slotMinY, 0);
+            var heightEnd = new Point3d(slotAnchorX, slotMaxY, 0);
+            var heightLinePoint = new Point3d(dimensionX, slotCenterY + heightLabelOffset, 0);
+            var heightDim = ApplyDimStyle(LinearDimension.Create(
+                AnnotationType.Rotated,
+                dimStyle,
+                plane,
+                Vector3d.XAxis,
+                heightStart,
+                heightEnd,
+                heightLinePoint,
+                Math.PI / 2.0), dimStyle);
+            BlueprintAnnotationDebug.LogDimensionRequest(
+                "Phase3ExtractionService.AddSlotSizeDimensions",
+                "SlotHeight",
+                dimStyle,
+                heightStart,
+                heightEnd,
+                heightLinePoint,
+                attr?.LayerIndex ?? -1);
+            TryAddDimension(doc, attr, heightDim, "Phase3.AddSlotSizeDimensions.Height");
+        }
+
+        private InteriorFeatureInfo AnalyzeInteriorFeature(Brep cutout, double tol)
+        {
+            const double HoleMinDiameter = 1.4375;
+            const double HoleMaxDiameter = 2.0625;
+            const double SlotMinLength = 4.0;
+            const double CircularTolerance = 0.02;
+
+            if (cutout == null)
+            {
+                return new InteriorFeatureInfo();
+            }
+
+            var bbox = cutout.GetBoundingBox(true);
+            if (!bbox.IsValid)
+            {
+                return new InteriorFeatureInfo();
+            }
+
+            double width = bbox.Max.X - bbox.Min.X;
+            double height = bbox.Max.Y - bbox.Min.Y;
+            double minDim = Math.Min(width, height);
+            double maxDim = Math.Max(width, height);
+            var center = new Point3d((bbox.Min.X + bbox.Max.X) / 2.0, (bbox.Min.Y + bbox.Max.Y) / 2.0, 0);
+
+            if (Math.Abs(width - height) <= CircularTolerance &&
+                minDim >= HoleMinDiameter - tol &&
+                maxDim <= HoleMaxDiameter + tol)
+            {
+                return new InteriorFeatureInfo
+                {
+                    Kind = InteriorFeatureKind.Hole,
+                    Center = center,
+                    Bounds = bbox,
+                    Diameter = (width + height) / 2.0,
+                    Width = width,
+                    Height = height
+                };
+            }
+
+            if (minDim >= HoleMinDiameter - tol &&
+                minDim <= HoleMaxDiameter + tol &&
+                maxDim >= SlotMinLength - tol &&
+                maxDim >= minDim * 1.5)
+            {
+                return new InteriorFeatureInfo
+                {
+                    Kind = InteriorFeatureKind.Slot,
+                    Center = center,
+                    Bounds = bbox,
+                    Width = maxDim,
+                    Height = minDim
+                };
+            }
+
+            return new InteriorFeatureInfo();
+        }
+
+        private static void TryAddDimension(RhinoDoc doc, ObjectAttributes attr, LinearDimension dimension, string context)
+        {
+            if (dimension == null)
+            {
+                RhinoApp.WriteLine($"[Blueprint Styles][{context}] Dimension instance is null; skipping add.");
+                return;
+            }
+
+            var style = doc?.DimStyles.FindId(dimension.DimensionStyleId);
+            var textPoint2d = dimension.TextPosition;
+            var textPoint = new Point3d(textPoint2d.X, textPoint2d.Y, 0);
+            RhinoApp.WriteLine(
+                $"[Blueprint Styles][{context}] Adding dimension style='{style?.Name ?? "(unknown)"}' (Id={dimension.DimensionStyleId}) layer={attr?.LayerIndex ?? -1} textPt={FormatPoint(textPoint)} value='{dimension.PlainText}'");
+
+            doc?.Objects.AddLinearDimension(dimension, attr);
+        }
+
+        private static DimensionStyle ResolveBlueprintStyle(RhinoDoc doc, string caller)
+        {
+            return BlueprintAnnotationDebug.ResolveDefaultStyle(doc, $"Phase3ExtractionService.{caller}");
+        }
+
+        private static string FormatPoint(Point3d pt) => $"({pt.X:F3}, {pt.Y:F3}, {pt.Z:F3})";
+
+        private static LinearDimension ApplyDimStyle(LinearDimension dimension, DimensionStyle style)
+        {
+            if (dimension != null && style != null)
+            {
+                dimension.DimensionStyleId = style.Id;
+            }
+
+            return dimension;
+        }
+
+        private enum InteriorFeatureKind
+        {
+            Unknown,
+            Hole,
+            Slot
+        }
+
+        private sealed class InteriorFeatureInfo
+        {
+            public InteriorFeatureKind Kind { get; set; } = InteriorFeatureKind.Unknown;
+            public Point3d Center { get; set; }
+            public BoundingBox Bounds { get; set; }
+            public double Diameter { get; set; }
+            public double Width { get; set; }
+            public double Height { get; set; }
         }
 
         private double GetMaxDepthFromEdge(Brep cutout, Curve edgeCurve, int samples = 48)

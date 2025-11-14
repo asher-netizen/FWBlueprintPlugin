@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Description of FWBlueprintPlugin")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0+36ec1c9b18193b8aa0c02a87bc45e72603ef98b4")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0+b1d1c0613263f16b86c135ac293c319046769590")]
 [assembly: System.Reflection.AssemblyProductAttribute("FWBlueprintPlugin")]
 [assembly: System.Reflection.AssemblyTitleAttribute("FWBlueprintPlugin")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

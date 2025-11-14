@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
-using Rhino;
 using Rhino.Geometry;
 using FWBlueprintPlugin;
 using FWBlueprintPlugin.Services;
@@ -40,7 +38,6 @@ namespace FWBlueprintPlugin.Services.Phase3
 
             if (!bbox.IsValid || panelBoundary == null || segmentData == null || panelBrep == null)
             {
-                RhinoApp.WriteLine($"[Edge Detection v2] Panel '{panelDisplayName}' missing geometry inputs; skipping.");
                 return new List<EdgeFeature>();
             }
 
@@ -61,41 +58,14 @@ namespace FWBlueprintPlugin.Services.Phase3
 
             var summaries = analyzer.Analyze(segmentData);
 
-            foreach (var summary in summaries)
-            {
-                LogEdgeSummary(summary, panelDisplayName);
-            }
-
             var detectedFeatures = summaries.SelectMany(s => s.Cutouts).ToList();
 
-            if (detectedFeatures.Count == 0)
-            {
-                RhinoApp.WriteLine($"[Edge Detection v2] Panel '{panelDisplayName}' produced no through edge cutouts.");
-            }
-            else
+            if (detectedFeatures.Count > 0)
             {
                 _edgeDimensioningService.AddEdgeFeatureDimensions(bbox, detectedFeatures, dimensionsLayerIndex);
             }
 
             return detectedFeatures;
-        }
-
-        private static void LogEdgeSummary(EdgeCutoutSummary summary, string panelDisplayName)
-        {
-            string panelLabel = string.IsNullOrWhiteSpace(panelDisplayName) ? "Unnamed Panel" : panelDisplayName;
-            string edgeHeader = $"Panel '{panelLabel}' Edge: {summary.EdgeName}";
-            string totalLength = $"{summary.TotalLength:F3}\"";
-
-            string cutoutsText = summary.Cutouts.Count == 0
-                ? "[]"
-                : "[" + string.Join(", ", summary.Cutouts.Select(f =>
-                    FormattableString.Invariant($"{{Type: {f.Type}, Width: {f.Width:F3}, Depth: {f.Depth:F3}, Start: {f.StartPos:F3}}}"))) + "]";
-
-            string gapText = summary.Gaps.Count == 0
-                ? "[]"
-                : "[" + string.Join(", ", summary.Gaps.Select(g => g.ToString("F3", CultureInfo.InvariantCulture))) + "]";
-
-            RhinoApp.WriteLine($"[Edge Detection v2] {edgeHeader}, Total length: {totalLength}, Cutouts: {cutoutsText}, Gaps: {gapText}");
         }
 
         #region Analyzer helpers

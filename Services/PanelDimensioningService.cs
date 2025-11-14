@@ -60,7 +60,13 @@ namespace FWBlueprintPlugin.Services
             }
 
             var redColor = Color.FromArgb(255, 0, 0);
-            var dimStyle = _doc.DimStyles.Current;
+            var dimStyle = GetBlueprintDimStyle("AddPanelDimensions");
+
+            if (dimStyle == null)
+            {
+                RhinoApp.WriteLine("[Blueprint Styles][PanelDimensioningService.AddPanelDimensions] Unable to resolve a dimension style; aborting dimension creation.");
+                return;
+            }
 
             if (info.DrawWidth)
             {
@@ -69,6 +75,15 @@ namespace FWBlueprintPlugin.Services
                 var widthLinePt = new Point3d((bbox.Min.X + bbox.Max.X) / 2, bbox.Max.Y + widthDimOffset, dimZ);
 
                 var widthPlane = new Plane(new Point3d(0, 0, dimZ), Vector3d.ZAxis);
+
+                BlueprintAnnotationDebug.LogDimensionRequest(
+                    "PanelDimensioningService.AddPanelDimensions",
+                    "Width",
+                    dimStyle,
+                    widthPt1,
+                    widthPt2,
+                    widthLinePt,
+                    info.LayerIndex);
 
                 var widthDim = LinearDimension.Create(
                     AnnotationType.Aligned,
@@ -79,6 +94,7 @@ namespace FWBlueprintPlugin.Services
                     widthPt2,
                     widthLinePt,
                     0);
+                ApplyDimStyle(widthDim, dimStyle);
 
                 var attr = new ObjectAttributes
                 {
@@ -117,6 +133,15 @@ namespace FWBlueprintPlugin.Services
                 Vector3d horizontalDirection = Vector3d.XAxis;
                 double rotationInPlane = Math.PI / 2.0;
 
+                BlueprintAnnotationDebug.LogDimensionRequest(
+                    "PanelDimensioningService.AddPanelDimensions",
+                    "Height",
+                    dimStyle,
+                    defPoint1,
+                    defPoint2,
+                    dimLinePoint,
+                    info.LayerIndex);
+
                 var heightDim = LinearDimension.Create(
                     AnnotationType.Rotated,
                     dimStyle,
@@ -126,6 +151,7 @@ namespace FWBlueprintPlugin.Services
                     defPoint2,
                     dimLinePoint,
                     rotationInPlane);
+                ApplyDimStyle(heightDim, dimStyle);
 
                 var attr = new ObjectAttributes
                 {
@@ -206,13 +232,20 @@ namespace FWBlueprintPlugin.Services
                 diagonalEnd.Y,
                 0);
 
-            DimensionStyle dimStyle = _doc.DimStyles.Current;
+            DimensionStyle dimStyle = GetBlueprintDimStyle("AddPanelLeader");
+            if (dimStyle == null)
+            {
+                RhinoApp.WriteLine("[Blueprint Styles][PanelDimensioningService.AddPanelLeader] Unable to resolve a dimension style; leader text will use defaults.");
+                return;
+            }
             double baseTextHeight = dimStyle.TextHeight;
             double dimScale = dimStyle.DimensionScale;
 
             double textHeight = baseTextHeight * dimScale;
             double lineSpacing = textHeight * 1.5;
             double labelGap = textHeight * 1.2;
+            var horizontalAlign = dimStyle.TextHorizontalAlignment;
+            var verticalAlign = dimStyle.TextVerticalAlignment;
 
             var leaderPoints = new List<Point3d> { arrowTarget, diagonalEnd, jogEnd };
             var leaderLine = new PolylineCurve(leaderPoints);
@@ -235,18 +268,15 @@ namespace FWBlueprintPlugin.Services
                 var textPt = new Point3d(textStart.X, textStart.Y - (i * lineSpacing) - visualOffset, 0);
                 var textPlane = new Plane(textPt, Vector3d.ZAxis);
 
-                var font = new Rhino.DocObjects.Font("Century Gothic Bold");
-
-                var text = new TextEntity
+                var text = TextEntity.Create(lines[i], textPlane, dimStyle, false, textHeight, 0.0);
+                if (text == null)
                 {
-                    Plane = textPlane,
-                    TextHeight = textHeight,
-                    Font = font,
-                    TextHorizontalAlignment = TextHorizontalAlignment.Left,
-                    TextVerticalAlignment = TextVerticalAlignment.BottomOfTop,
-                    DimensionStyleId = dimStyle.Id
-                };
-                text.RichText = lines[i];
+                    continue;
+                }
+
+                text.TextHorizontalAlignment = horizontalAlign;
+                text.TextVerticalAlignment = verticalAlign;
+                text.DimensionStyleId = dimStyle.Id;
 
                 var textAttr = new ObjectAttributes
                 {
@@ -258,6 +288,21 @@ namespace FWBlueprintPlugin.Services
 
                 _doc.Objects.AddText(text, textAttr);
             }
+        }
+
+        private DimensionStyle GetBlueprintDimStyle(string caller)
+        {
+            return BlueprintAnnotationDebug.ResolveDefaultStyle(_doc, $"PanelDimensioningService.{caller}");
+        }
+
+        private static void ApplyDimStyle(AnnotationBase dimension, DimensionStyle style)
+        {
+            if (dimension == null || style == null)
+            {
+                return;
+            }
+
+            dimension.DimensionStyleId = style.Id;
         }
 
         private void AddStreamlinedArrowhead(Point3d tip, Point3d direction, int layerIndex)
