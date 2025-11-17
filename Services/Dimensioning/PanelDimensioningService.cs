@@ -1,12 +1,13 @@
+using FWBlueprintPlugin.Models.Dimensioning;
 using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using static FWBlueprintPlugin.Services.DimensionFormatting;
+using static FWBlueprintPlugin.Services.Dimensioning.DimensionFormatting;
 
-namespace FWBlueprintPlugin.Services
+namespace FWBlueprintPlugin.Services.Dimensioning
 {
     /// <summary>
     /// Encapsulates logic for adding panel dimensions and leaders.

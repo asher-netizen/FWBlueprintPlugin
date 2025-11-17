@@ -4,6 +4,7 @@ using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 using FWBlueprintPlugin;
+using FWBlueprintPlugin.Models.Extraction;
 
 namespace FWBlueprintPlugin.Services.Phase3
 {

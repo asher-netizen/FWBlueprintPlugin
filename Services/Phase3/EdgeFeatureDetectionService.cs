@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using Rhino.Geometry;
 using FWBlueprintPlugin;
-using FWBlueprintPlugin.Services;
+using FWBlueprintPlugin.Models.Dimensioning;
+using FWBlueprintPlugin.Models.Extraction;
+using FWBlueprintPlugin.Services.Dimensioning;
 
 namespace FWBlueprintPlugin.Services.Phase3
 {

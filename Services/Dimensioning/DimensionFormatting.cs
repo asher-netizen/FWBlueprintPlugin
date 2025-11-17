@@ -1,6 +1,6 @@
 using System;
 
-namespace FWBlueprintPlugin.Services
+namespace FWBlueprintPlugin.Services.Dimensioning
 {
     internal static class DimensionFormatting
     {

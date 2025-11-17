@@ -2,12 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using FWBlueprintPlugin.Models.Dimensioning;
 using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
-using static FWBlueprintPlugin.Services.DimensionFormatting;
+using static FWBlueprintPlugin.Services.Dimensioning.DimensionFormatting;
 
-namespace FWBlueprintPlugin.Services
+namespace FWBlueprintPlugin.Services.Dimensioning
 {
     /// <summary>
     /// Handles creation of edge feature dimension chains for detected cutouts.

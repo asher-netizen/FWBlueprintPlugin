@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using FWBlueprintPlugin.Services;
+using FWBlueprintPlugin.Services.Dimensioning;
 using FWBlueprintPlugin.Services.Phase3;
 using Rhino;
 using Rhino.Commands;

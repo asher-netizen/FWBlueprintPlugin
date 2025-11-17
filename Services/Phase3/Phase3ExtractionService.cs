@@ -8,7 +8,9 @@ using Rhino.DocObjects;
 using Rhino.Geometry;
 using Rhino.Geometry.Intersect;
 using FWBlueprintPlugin;
-using static FWBlueprintPlugin.Services.DimensionFormatting;
+using FWBlueprintPlugin.Models.Dimensioning;
+using FWBlueprintPlugin.Models.Extraction;
+using static FWBlueprintPlugin.Services.Dimensioning.DimensionFormatting;
 
 namespace FWBlueprintPlugin.Services.Phase3
 {
