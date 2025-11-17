@@ -429,7 +429,10 @@ namespace FWBlueprintPlugin.Services.Phase3
                 var dimStyle = ResolveBlueprintStyle(doc, "AddChordDimensions");
                 if (dimStyle == null)
                 {
-                    RhinoApp.WriteLine("[Blueprint Styles][Phase3ExtractionService.AddChordDimensions] Unable to resolve blueprint dimension style; skipping chord dimensions.");
+                    if (LoggingOptions.EnableVerboseLogging)
+                    {
+                        RhinoApp.WriteLine("[Blueprint Styles][Phase3ExtractionService.AddChordDimensions] Unable to resolve blueprint dimension style; skipping chord dimensions.");
+                    }
                     continue;
                 }
 
@@ -808,7 +811,10 @@ namespace FWBlueprintPlugin.Services.Phase3
 
                 if (nearEdges >= 2)
                 {
-                    RhinoApp.WriteLine("[Interior Cord Hole] Skipping dimensions because the feature is within 2.0625\" of two edges.");
+                    if (LoggingOptions.EnableVerboseLogging)
+                    {
+                        RhinoApp.WriteLine("[Interior Cord Hole] Skipping dimensions because the feature is within 2.0625\" of two edges.");
+                    }
                     return;
                 }
             }
@@ -957,7 +963,10 @@ namespace FWBlueprintPlugin.Services.Phase3
             double rightGap = panelBBox.Max.X - slotMaxX;
             double bottomGap = slotMinY - panelBBox.Min.Y;
             double topGap = panelBBox.Max.Y - slotMaxY;
-            RhinoApp.WriteLine($"[SlotHeight] leftGap={leftGap:F3}, rightGap={rightGap:F3}, topGap={topGap:F3}, bottomGap={bottomGap:F3}");
+            if (LoggingOptions.EnableVerboseLogging)
+            {
+                RhinoApp.WriteLine($"[SlotHeight] leftGap={leftGap:F3}, rightGap={rightGap:F3}, topGap={topGap:F3}, bottomGap={bottomGap:F3}");
+            }
 
             bool fromLeft = leftGap <= rightGap;
             var xStart = new Point3d(fromLeft ? panelBBox.Min.X : panelBBox.Max.X, slotCenterY, 0);
@@ -1025,7 +1034,10 @@ namespace FWBlueprintPlugin.Services.Phase3
             double slotAnchorX = nearestLeftEdge ? slotMaxX : slotMinX;
             double dimensionX = slotAnchorX + (nearestLeftEdge ? 3.0 : -3.0);
             double heightLabelOffset = widthOffsetBelow ? 3.0 : -3.0;
-            RhinoApp.WriteLine($"[SlotHeight] nearestLeftEdge={nearestLeftEdge}, widthOffset={widthOffset:F3}, widthOffsetBelow={widthOffsetBelow}, slotAnchorX={slotAnchorX:F3}, dimensionX={dimensionX:F3}, labelOffset={heightLabelOffset:F3}");
+            if (LoggingOptions.EnableVerboseLogging)
+            {
+                RhinoApp.WriteLine($"[SlotHeight] nearestLeftEdge={nearestLeftEdge}, widthOffset={widthOffset:F3}, widthOffsetBelow={widthOffsetBelow}, slotAnchorX={slotAnchorX:F3}, dimensionX={dimensionX:F3}, labelOffset={heightLabelOffset:F3}");
+            }
 
             var heightStart = new Point3d(slotAnchorX, slotMinY, 0);
             var heightEnd = new Point3d(slotAnchorX, slotMaxY, 0);
@@ -1111,15 +1123,21 @@ namespace FWBlueprintPlugin.Services.Phase3
         {
             if (dimension == null)
             {
-                RhinoApp.WriteLine($"[Blueprint Styles][{context}] Dimension instance is null; skipping add.");
+                if (LoggingOptions.EnableVerboseLogging)
+                {
+                    RhinoApp.WriteLine($"[Blueprint Styles][{context}] Dimension instance is null; skipping add.");
+                }
                 return;
             }
 
-            var style = doc?.DimStyles.FindId(dimension.DimensionStyleId);
-            var textPoint2d = dimension.TextPosition;
-            var textPoint = new Point3d(textPoint2d.X, textPoint2d.Y, 0);
-            RhinoApp.WriteLine(
-                $"[Blueprint Styles][{context}] Adding dimension style='{style?.Name ?? "(unknown)"}' (Id={dimension.DimensionStyleId}) layer={attr?.LayerIndex ?? -1} textPt={FormatPoint(textPoint)} value='{dimension.PlainText}'");
+            if (LoggingOptions.EnableVerboseLogging)
+            {
+                var style = doc?.DimStyles.FindId(dimension.DimensionStyleId);
+                var textPoint2d = dimension.TextPosition;
+                var textPoint = new Point3d(textPoint2d.X, textPoint2d.Y, 0);
+                RhinoApp.WriteLine(
+                    $"[Blueprint Styles][{context}] Adding dimension style='{style?.Name ?? "(unknown)"}' (Id={dimension.DimensionStyleId}) layer={attr?.LayerIndex ?? -1} textPt={FormatPoint(textPoint)} value='{dimension.PlainText}'");
+            }
 
             doc?.Objects.AddLinearDimension(dimension, attr);
         }

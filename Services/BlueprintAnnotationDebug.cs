@@ -9,18 +9,26 @@ namespace FWBlueprintPlugin.Services
     {
         public static DimensionStyle ResolveDefaultStyle(RhinoDoc doc, string caller)
         {
+            bool verbose = LoggingOptions.EnableVerboseLogging;
+
             if (doc == null)
             {
                 RhinoApp.WriteLine($"[Blueprint Styles][{caller}] RhinoDoc is null; cannot resolve dimension style.");
                 return null;
             }
 
-            RhinoApp.WriteLine($"[Blueprint Styles][{caller}] Document '{doc.Name}' has {doc.DimStyles.Count} dim style(s). Current='{doc.DimStyles.Current?.Name ?? "(null)"}'.");
+            if (verbose)
+            {
+                RhinoApp.WriteLine($"[Blueprint Styles][{caller}] Document '{doc.Name}' has {doc.DimStyles.Count} dim style(s). Current='{doc.DimStyles.Current?.Name ?? "(null)"}'.");
+            }
 
             var blueprintStyle = doc.DimStyles.FindName(BlueprintAnnotationStyles.Default);
             if (blueprintStyle != null)
             {
-                RhinoApp.WriteLine($"[Blueprint Styles][{caller}] Using '{blueprintStyle.Name}' (Index={blueprintStyle.Index}, Id={blueprintStyle.Id}).");
+                if (verbose)
+                {
+                    RhinoApp.WriteLine($"[Blueprint Styles][{caller}] Using '{blueprintStyle.Name}' (Index={blueprintStyle.Index}, Id={blueprintStyle.Id}).");
+                }
                 return blueprintStyle;
             }
 
@@ -31,13 +39,19 @@ namespace FWBlueprintPlugin.Services
 
         public static void LogDimensionRequest(string caller, string dimensionType, DimensionStyle style, Point3d start, Point3d end, Point3d dimLinePoint, int layerIndex)
         {
-            RhinoApp.WriteLine(
-                $"[Blueprint Styles][{caller}] Creating {dimensionType} dimension | layer={layerIndex} | style='{style?.Name ?? "(null)"}' (Id={style?.Id ?? Guid.Empty}) | start={FormatPoint(start)} end={FormatPoint(end)} dimLine={FormatPoint(dimLinePoint)}");
+            if (LoggingOptions.EnableVerboseLogging)
+            {
+                RhinoApp.WriteLine(
+                    $"[Blueprint Styles][{caller}] Creating {dimensionType} dimension | layer={layerIndex} | style='{style?.Name ?? "(null)"}' (Id={style?.Id ?? Guid.Empty}) | start={FormatPoint(start)} end={FormatPoint(end)} dimLine={FormatPoint(dimLinePoint)}");
+            }
         }
 
-        public static void LogStyleImport(string message)
+        public static void LogStyleImport(string message, bool always = false)
         {
-            RhinoApp.WriteLine($"[Blueprint Styles][Import] {message}");
+            if (always || LoggingOptions.EnableVerboseLogging)
+            {
+                RhinoApp.WriteLine($"[Blueprint Styles][Import] {message}");
+            }
         }
 
         private static string FormatPoint(Point3d pt) =>

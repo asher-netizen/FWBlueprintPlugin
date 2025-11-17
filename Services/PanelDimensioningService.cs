@@ -64,7 +64,10 @@ namespace FWBlueprintPlugin.Services
 
             if (dimStyle == null)
             {
-                RhinoApp.WriteLine("[Blueprint Styles][PanelDimensioningService.AddPanelDimensions] Unable to resolve a dimension style; aborting dimension creation.");
+                if (LoggingOptions.EnableVerboseLogging)
+                {
+                    RhinoApp.WriteLine("[Blueprint Styles][PanelDimensioningService.AddPanelDimensions] Unable to resolve a dimension style; aborting dimension creation.");
+                }
                 return;
             }
 
@@ -235,7 +238,10 @@ namespace FWBlueprintPlugin.Services
             DimensionStyle dimStyle = GetBlueprintDimStyle("AddPanelLeader");
             if (dimStyle == null)
             {
-                RhinoApp.WriteLine("[Blueprint Styles][PanelDimensioningService.AddPanelLeader] Unable to resolve a dimension style; leader text will use defaults.");
+                if (LoggingOptions.EnableVerboseLogging)
+                {
+                    RhinoApp.WriteLine("[Blueprint Styles][PanelDimensioningService.AddPanelLeader] Unable to resolve a dimension style; leader text will use defaults.");
+                }
                 return;
             }
             double baseTextHeight = dimStyle.TextHeight;

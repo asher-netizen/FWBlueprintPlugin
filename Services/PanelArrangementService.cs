@@ -249,7 +249,10 @@ namespace FWBlueprintPlugin.Services
                 return;
             }
 
-            RhinoApp.WriteLine($"[Blueprint Styles] Dimension style '{styleName}' is missing; ensure the resource model is available.");
+            if (LoggingOptions.EnableVerboseLogging)
+            {
+                RhinoApp.WriteLine($"[Blueprint Styles] Dimension style '{styleName}' is missing; ensure the resource model is available.");
+            }
         }
 
         private double CalculateThickness(GeometryBase geometry)

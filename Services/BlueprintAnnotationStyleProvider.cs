@@ -23,7 +23,7 @@ namespace FWBlueprintPlugin.Services
     internal sealed class BlueprintAnnotationStyleProvider
     {
         private const string ResourceName = "FWBlueprintPlugin.EmbeddedResources.BlueprintAnnotationStyles.3dm";
-        private static readonly Dictionary<string, string[]> StyleAliases =
+        private static readonly IReadOnlyDictionary<string, string[]> StyleAliases =
             new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
             {
                 { BlueprintAnnotationStyles.Default, new[] { "Blueprint Dim - Defaut" } }
@@ -42,40 +42,60 @@ namespace FWBlueprintPlugin.Services
                 return;
             }
 
-            BlueprintAnnotationDebug.LogStyleImport($"Ensuring styles for doc '{_doc.Name}' with {_doc.DimStyles.Count} existing dim style(s): {DescribeDimStyles()}");
+            bool verbose = LoggingOptions.EnableVerboseLogging;
+
+            if (verbose)
+            {
+                BlueprintAnnotationDebug.LogStyleImport($"Ensuring styles for doc '{_doc.Name}' with {_doc.DimStyles.Count} existing dim style(s): {DescribeDimStyles()}");
+            }
 
             var missingStyles = GetMissingStyles();
             if (missingStyles.Count == 0)
             {
-                BlueprintAnnotationDebug.LogStyleImport("All Blueprint styles already present; no import required.");
+                if (verbose)
+                {
+                    BlueprintAnnotationDebug.LogStyleImport("All Blueprint styles already present; no import required.");
+                }
                 return;
             }
 
-            BlueprintAnnotationDebug.LogStyleImport($"Missing styles detected: {string.Join(", ", missingStyles)}");
+            if (verbose)
+            {
+                BlueprintAnnotationDebug.LogStyleImport($"Missing styles detected: {string.Join(", ", missingStyles)}");
+            }
 
             string tempFilePath = ExtractResourceToTempFile();
             if (string.IsNullOrWhiteSpace(tempFilePath))
             {
-                BlueprintAnnotationDebug.LogStyleImport("Unable to access embedded annotation styles (resource stream empty).");
+                BlueprintAnnotationDebug.LogStyleImport("Unable to access embedded annotation styles (resource stream empty).", true);
                 return;
             }
 
             try
             {
                 long sizeBytes = new FileInfo(tempFilePath).Length;
-                BlueprintAnnotationDebug.LogStyleImport($"Loading carrier model '{tempFilePath}' ({sizeBytes} bytes) to copy missing styles.");
+                if (verbose)
+                {
+                    BlueprintAnnotationDebug.LogStyleImport($"Loading carrier model '{tempFilePath}' ({sizeBytes} bytes) to copy missing styles.");
+                }
 
                 int addedCount = CopyStylesFromCarrier(tempFilePath, missingStyles);
-                BlueprintAnnotationDebug.LogStyleImport($"Attempted to add {missingStyles.Count} style(s); successfully added {addedCount}.");
+                if (verbose)
+                {
+                    BlueprintAnnotationDebug.LogStyleImport($"Attempted to add {missingStyles.Count} style(s); successfully added {addedCount}.");
+                }
 
                 var stillMissing = GetMissingStyles();
                 if (stillMissing.Count > 0)
                 {
-                    BlueprintAnnotationDebug.LogStyleImport($"Import completed but styles still missing: {string.Join(", ", stillMissing)}");
+                    BlueprintAnnotationDebug.LogStyleImport($"Import completed but styles still missing: {string.Join(", ", stillMissing)}", true);
                 }
                 else
                 {
-                    BlueprintAnnotationDebug.LogStyleImport($"Import succeeded; document now has {_doc.DimStyles.Count} dim style(s): {DescribeDimStyles()}");
+                    if (verbose)
+                    {
+                        BlueprintAnnotationDebug.LogStyleImport($"Import succeeded; document now has {_doc.DimStyles.Count} dim style(s): {DescribeDimStyles()}");
+                    }
                 }
             }
             finally
@@ -107,7 +127,7 @@ namespace FWBlueprintPlugin.Services
                 {
                     if (resourceStream == null)
                     {
-                        BlueprintAnnotationDebug.LogStyleImport("Embedded resource stream not found; check build output.");
+                        BlueprintAnnotationDebug.LogStyleImport("Embedded resource stream not found; check build output.", true);
                         return string.Empty;
                     }
 
@@ -122,7 +142,7 @@ namespace FWBlueprintPlugin.Services
             }
             catch (Exception ex)
             {
-                BlueprintAnnotationDebug.LogStyleImport($"Failed to extract embedded styles: {ex.Message}");
+                BlueprintAnnotationDebug.LogStyleImport($"Failed to extract embedded styles: {ex.Message}", true);
                 return string.Empty;
             }
         }
@@ -137,20 +157,20 @@ namespace FWBlueprintPlugin.Services
             }
             catch (Exception ex)
             {
-                BlueprintAnnotationDebug.LogStyleImport($"Unable to read carrier model '{filePath}': {ex.Message}");
+                BlueprintAnnotationDebug.LogStyleImport($"Unable to read carrier model '{filePath}': {ex.Message}", true);
                 return 0;
             }
 
             if (carrier == null)
             {
-                BlueprintAnnotationDebug.LogStyleImport("Carrier model read returned null; aborting style copy.");
+                BlueprintAnnotationDebug.LogStyleImport("Carrier model read returned null; aborting style copy.", true);
                 return 0;
             }
 
             var carrierStyles = carrier.AllDimStyles;
             if (carrierStyles == null)
             {
-                BlueprintAnnotationDebug.LogStyleImport("Carrier file did not expose AllDimStyles; no styles copied.");
+                BlueprintAnnotationDebug.LogStyleImport("Carrier file did not expose AllDimStyles; no styles copied.", true);
                 return 0;
             }
 
@@ -158,21 +178,20 @@ namespace FWBlueprintPlugin.Services
             {
                 if (_doc.DimStyles.FindName(styleName) != null)
                 {
-                    BlueprintAnnotationDebug.LogStyleImport($"Style '{styleName}' already exists after import check; skipping.");
                     continue;
                 }
 
                 DimensionStyle sourceStyle = FindCarrierStyle(carrierStyles, styleName);
                 if (sourceStyle == null)
                 {
-                    BlueprintAnnotationDebug.LogStyleImport($"Carrier file did not contain style '{styleName}'.");
+                    BlueprintAnnotationDebug.LogStyleImport($"Carrier file did not contain style '{styleName}'.", true);
                     continue;
                 }
 
                 var clone = sourceStyle.Duplicate();
                 if (clone == null)
                 {
-                    BlueprintAnnotationDebug.LogStyleImport($"Failed to duplicate style '{styleName}' from carrier file.");
+                    BlueprintAnnotationDebug.LogStyleImport($"Failed to duplicate style '{styleName}' from carrier file.", true);
                     continue;
                 }
 
@@ -187,7 +206,7 @@ namespace FWBlueprintPlugin.Services
                 }
                 else
                 {
-                    BlueprintAnnotationDebug.LogStyleImport($"Rhino refused to add style '{styleName}'; DimStyles.Add returned {newIndex}.");
+                    BlueprintAnnotationDebug.LogStyleImport($"Rhino refused to add style '{styleName}'; DimStyles.Add returned {newIndex}.", true);
                 }
             }
 
@@ -207,6 +226,19 @@ namespace FWBlueprintPlugin.Services
                 return direct;
             }
 
+            if (StyleAliases.TryGetValue(styleName, out var aliases))
+            {
+                foreach (var alias in aliases)
+                {
+                    var aliasMatch = table.FindName(alias);
+                    if (aliasMatch != null)
+                    {
+                        BlueprintAnnotationDebug.LogStyleImport($"Carrier style '{aliasMatch.Name}' matched requested '{styleName}' via alias '{alias}'.");
+                        return aliasMatch;
+                    }
+                }
+            }
+
             foreach (var style in table)
             {
                 var candidateName = style?.Name;
@@ -222,25 +254,8 @@ namespace FWBlueprintPlugin.Services
                 }
             }
 
-            if (StyleAliases.TryGetValue(styleName, out var aliasList))
-            {
-                foreach (var alias in aliasList)
-                {
-                    var aliasMatch = table.FindName(alias) ?? table.FirstOrDefault(s =>
-                        !string.IsNullOrWhiteSpace(s?.Name) &&
-                        string.Equals(s.Name.Trim(), alias, StringComparison.OrdinalIgnoreCase));
-
-                    if (aliasMatch != null)
-                    {
-                        BlueprintAnnotationDebug.LogStyleImport(
-                            $"Carrier style '{aliasMatch.Name}' matched requested '{styleName}' via alias '{alias}'.");
-                        return aliasMatch;
-                    }
-                }
-            }
-
             var availableNames = string.Join(", ", table.Select(s => s?.Name ?? "(null)"));
-            BlueprintAnnotationDebug.LogStyleImport($"Carrier styles available: {availableNames}");
+            BlueprintAnnotationDebug.LogStyleImport($"Carrier styles available: {availableNames}", true);
             return null;
         }
 
@@ -261,7 +276,7 @@ namespace FWBlueprintPlugin.Services
             }
             catch
             {
-                BlueprintAnnotationDebug.LogStyleImport($"Failed to delete temporary file '{path}'. Manual cleanup may be required.");
+                BlueprintAnnotationDebug.LogStyleImport($"Failed to delete temporary file '{path}'. Manual cleanup may be required.", true);
             }
         }
 

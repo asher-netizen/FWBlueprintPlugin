@@ -21,7 +21,7 @@ namespace FWBlueprintPlugin.Services
             _doc = doc ?? throw new ArgumentNullException(nameof(doc));
         }
 
-        private static readonly bool VerboseLogging = false;
+        private static bool VerboseLogging => LoggingOptions.EnableVerboseLogging;
 
         public void AddEdgeFeatureDimensions(Rectangle3d panelBBox, IList<EdgeFeature> features, int dimensionsLayerIndex)
         {
@@ -98,7 +98,10 @@ namespace FWBlueprintPlugin.Services
                 }
             }
 
-            RhinoApp.WriteLine($"[Edge Dimensions] Completed dimensioning {features.Count} feature(s) across {groupedByEdge.Count()} edge(s).");
+            if (VerboseLogging)
+            {
+                RhinoApp.WriteLine($"[Edge Dimensions] Completed dimensioning {features.Count} feature(s) across {groupedByEdge.Count()} edge(s).");
+            }
         }
 
         private void AddEdgeHoleDimensions(Rectangle3d bbox, IList<EdgeFeature> holes, string edgeName, double edgeLength, int dimensionsLayerIndex)
@@ -236,7 +239,10 @@ namespace FWBlueprintPlugin.Services
             DimensionStyle dimStyle = ResolveBlueprintStyle("CreateRunningDimensionLine");
             if (dimStyle == null)
             {
-                RhinoApp.WriteLine("[Blueprint Styles][EdgeDimensioningService.CreateRunningDimensionLine] Unable to resolve dimension style; skipping dimension chain.");
+                if (LoggingOptions.EnableVerboseLogging)
+                {
+                    RhinoApp.WriteLine("[Blueprint Styles][EdgeDimensioningService.CreateRunningDimensionLine] Unable to resolve dimension style; skipping dimension chain.");
+                }
                 return;
             }
 
@@ -309,7 +315,10 @@ namespace FWBlueprintPlugin.Services
             var dimStyle = ResolveBlueprintStyle("AddEdgeNotchDimensions");
             if (dimStyle == null)
             {
-                RhinoApp.WriteLine("[Blueprint Styles][EdgeDimensioningService.AddEdgeNotchDimensions] Unable to resolve dimension style; skipping notch dimensions.");
+                if (LoggingOptions.EnableVerboseLogging)
+                {
+                    RhinoApp.WriteLine("[Blueprint Styles][EdgeDimensioningService.AddEdgeNotchDimensions] Unable to resolve dimension style; skipping notch dimensions.");
+                }
                 return;
             }
             var attr = new ObjectAttributes

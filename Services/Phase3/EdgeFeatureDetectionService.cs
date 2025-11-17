@@ -8,7 +8,7 @@ using FWBlueprintPlugin.Services;
 namespace FWBlueprintPlugin.Services.Phase3
 {
     /// <summary>
-    /// Edge detection entry point for the Version 2 scanner. Legacy version 1 lives in <see cref="EdgeFeatureDetectionServiceV1"/>.
+    /// Edge detection entry point for the Version 2 scanner.
     /// </summary>
     internal class EdgeFeatureDetectionService
     {
