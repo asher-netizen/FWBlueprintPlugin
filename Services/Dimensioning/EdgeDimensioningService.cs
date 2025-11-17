@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using FWBlueprintPlugin.Infrastructure.Logging;
 using FWBlueprintPlugin.Models.Dimensioning;
 using Rhino;
 using Rhino.DocObjects;
@@ -22,7 +23,7 @@ namespace FWBlueprintPlugin.Services.Dimensioning
             _doc = doc ?? throw new ArgumentNullException(nameof(doc));
         }
 
-        private static bool VerboseLogging => LoggingOptions.EnableVerboseLogging;
+        private static bool VerboseLogging => LoggingService.IsEnabled(LogLevel.Debug);
 
         public void AddEdgeFeatureDimensions(Rectangle3d panelBBox, IList<EdgeFeature> features, int dimensionsLayerIndex)
         {
@@ -240,9 +241,9 @@ namespace FWBlueprintPlugin.Services.Dimensioning
             DimensionStyle dimStyle = ResolveBlueprintStyle("CreateRunningDimensionLine");
             if (dimStyle == null)
             {
-                if (LoggingOptions.EnableVerboseLogging)
+                if (LoggingService.IsEnabled(LogLevel.Debug))
                 {
-                    RhinoApp.WriteLine("[Blueprint Styles][EdgeDimensioningService.CreateRunningDimensionLine] Unable to resolve dimension style; skipping dimension chain.");
+                    LoggingService.Debug("[Blueprint Styles][EdgeDimensioningService.CreateRunningDimensionLine] Unable to resolve dimension style; skipping dimension chain.");
                 }
                 return;
             }
@@ -316,9 +317,9 @@ namespace FWBlueprintPlugin.Services.Dimensioning
             var dimStyle = ResolveBlueprintStyle("AddEdgeNotchDimensions");
             if (dimStyle == null)
             {
-                if (LoggingOptions.EnableVerboseLogging)
+                if (LoggingService.IsEnabled(LogLevel.Debug))
                 {
-                    RhinoApp.WriteLine("[Blueprint Styles][EdgeDimensioningService.AddEdgeNotchDimensions] Unable to resolve dimension style; skipping notch dimensions.");
+                    LoggingService.Debug("[Blueprint Styles][EdgeDimensioningService.AddEdgeNotchDimensions] Unable to resolve dimension style; skipping notch dimensions.");
                 }
                 return;
             }

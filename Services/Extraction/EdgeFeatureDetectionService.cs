@@ -7,7 +7,7 @@ using FWBlueprintPlugin.Models.Dimensioning;
 using FWBlueprintPlugin.Models.Extraction;
 using FWBlueprintPlugin.Services.Dimensioning;
 
-namespace FWBlueprintPlugin.Services.Phase3
+namespace FWBlueprintPlugin.Services.Extraction
 {
     /// <summary>
     /// Edge detection entry point for the Version 2 scanner.

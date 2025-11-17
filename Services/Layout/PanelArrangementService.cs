@@ -8,7 +8,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 
-namespace FWBlueprintPlugin.Services
+namespace FWBlueprintPlugin.Services.Layout
 {
     /// <summary>
     /// Handles panel flattening, layout, and deferred dimension data collection.
@@ -16,11 +16,8 @@ namespace FWBlueprintPlugin.Services
     internal class PanelArrangementService
     {
         private readonly RhinoDoc _doc;
-
-        private Dictionary<string, double> _panelThicknesses = new Dictionary<string, double>();
-        private List<BoundingBox> _panelBounds = new List<BoundingBox>();
-        private List<PanelDimensionInfo> _deferredDimensions = new List<PanelDimensionInfo>();
-        private List<PanelLeaderInfo> _deferredLeaders = new List<PanelLeaderInfo>();
+        private readonly PanelLayoutWorkspace _workspace = new PanelLayoutWorkspace();
+        private readonly PanelLayerConfigurator _layerConfigurator;
         private int _panelMarkerDimStyleIndex = -1;
 
         private struct PanelCategoryEntry
@@ -33,12 +30,12 @@ namespace FWBlueprintPlugin.Services
         public PanelArrangementService(RhinoDoc doc)
         {
             _doc = doc ?? throw new ArgumentNullException(nameof(doc));
+            _layerConfigurator = new PanelLayerConfigurator(_doc);
         }
 
         public void SetupLayersAndStyles(Layer parentLayer)
         {
-            CreateLayerStructure(parentLayer);
-            CreateDimensionStyle();
+            _layerConfigurator.SetupLayersAndStyles(parentLayer);
         }
 
         public PanelArrangementResult ArrangePanels(
@@ -52,14 +49,11 @@ namespace FWBlueprintPlugin.Services
             List<RhinoObject> doors,
             Layer parentLayer)
         {
-            _panelThicknesses = new Dictionary<string, double>();
-            _panelBounds = new List<BoundingBox>();
-            _deferredDimensions = new List<PanelDimensionInfo>();
-            _deferredLeaders = new List<PanelLeaderInfo>();
+            _workspace.Reset();
 
             try
             {
-                int panelsLayerIndex = FindLayerIndex(parentLayer, "Blueprint", "Panels");
+                int panelsLayerIndex = FindLayerIndex(parentLayer, "Blueprint", "3D Panels");
                 int dimensionsLayerIndex = FindLayerIndex(parentLayer, "Blueprint", "Dimensions");
 
                 double verticalSpacing = 12.0;
@@ -84,21 +78,21 @@ namespace FWBlueprintPlugin.Services
                 foreach (var obj in allTopComponents)
                 {
                     double thickness = CalculateThickness(obj.Geometry);
-                    _panelThicknesses[$"Top_{topIdx}"] = thickness;
+                    _workspace.PanelThicknesses[$"Top_{topIdx}"] = thickness;
                     AssignPanelThickness(obj, thickness);
                     topIdx++;
                 }
 
                 double backThickness = CalculateThickness(backPanel.Geometry);
-                _panelThicknesses["Back"] = backThickness;
+                _workspace.PanelThicknesses["Back"] = backThickness;
                 AssignPanelThickness(backPanel, backThickness);
 
                 double bottomThickness = CalculateThickness(bottomPanel.Geometry);
-                _panelThicknesses["Bottom"] = bottomThickness;
+                _workspace.PanelThicknesses["Bottom"] = bottomThickness;
                 AssignPanelThickness(bottomPanel, bottomThickness);
 
                 var topInfo = FlattenLiftLidTop(topConfig, leftAlignX, startY, panelsLayerIndex);
-                _panelBounds.Add(topInfo.OverallBBox);
+                _workspace.PanelBounds.Add(topInfo.OverallBBox);
                 DeferLiftLidTopDimensions(topConfig, topInfo, dimensionsLayerIndex);
 
                 double currentY = topInfo.OverallBBox.Min.Y - verticalSpacing;
@@ -190,70 +184,15 @@ namespace FWBlueprintPlugin.Services
                 return new PanelArrangementResult
                 {
                     Success = true,
-                    PanelThicknesses = _panelThicknesses,
-                    PanelBounds = _panelBounds,
-                    DeferredDimensions = _deferredDimensions,
-                    DeferredLeaders = _deferredLeaders
+                    PanelThicknesses = _workspace.PanelThicknesses,
+                    PanelBounds = _workspace.PanelBounds,
+                    DeferredDimensions = _workspace.DeferredDimensions,
+                    DeferredLeaders = _workspace.DeferredLeaders
                 };
             }
             catch
             {
                 return new PanelArrangementResult { Success = false };
-            }
-        }
-
-        private void CreateLayerStructure(Layer parentLayer)
-        {
-            var blueprintLayer = new Layer
-            {
-                Name = "Blueprint",
-                ParentLayerId = parentLayer.Id,
-                Color = System.Drawing.Color.Black
-            };
-            int blueprintIndex = _doc.Layers.Add(blueprintLayer);
-
-            if (blueprintIndex < 0)
-            {
-                for (int i = 0; i < _doc.Layers.Count; i++)
-                {
-                    if (_doc.Layers[i].Name == "Blueprint" && _doc.Layers[i].ParentLayerId == parentLayer.Id)
-                    {
-                        blueprintIndex = i;
-                        break;
-                    }
-                }
-            }
-
-            var blueprintLayerObj = _doc.Layers[blueprintIndex];
-
-            var panelsLayer = new Layer
-            {
-                Name = "Panels",
-                ParentLayerId = blueprintLayerObj.Id,
-                Color = System.Drawing.Color.Black
-            };
-            _doc.Layers.Add(panelsLayer);
-
-            var dimensionsLayer = new Layer
-            {
-                Name = "Dimensions",
-                ParentLayerId = blueprintLayerObj.Id,
-                Color = System.Drawing.Color.Red
-            };
-            _doc.Layers.Add(dimensionsLayer);
-        }
-
-        private void CreateDimensionStyle()
-        {
-            var styleName = BlueprintAnnotationStyles.Default;
-            if (_doc.DimStyles.FindName(styleName) != null)
-            {
-                return;
-            }
-
-            if (LoggingOptions.EnableVerboseLogging)
-            {
-                RhinoApp.WriteLine($"[Blueprint Styles] Dimension style '{styleName}' is missing; ensure the resource model is available.");
             }
         }
 
@@ -366,7 +305,7 @@ namespace FWBlueprintPlugin.Services
 
             if (totalCount == 1)
             {
-                _deferredDimensions.Add(new PanelDimensionInfo
+                _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                 {
                     BBox = info.OverallBBox,
                     PanelType = panelType,
@@ -379,7 +318,7 @@ namespace FWBlueprintPlugin.Services
             }
             else
             {
-                _deferredDimensions.Add(new PanelDimensionInfo
+                _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                 {
                     BBox = info.OverallBBox,
                     PanelType = panelType,
@@ -393,7 +332,7 @@ namespace FWBlueprintPlugin.Services
 
                 foreach (var childBBox in info.WidthGroupBBoxes)
                 {
-                    _deferredDimensions.Add(new PanelDimensionInfo
+                    _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                     {
                         BBox = childBBox,
                         PanelType = panelType,
@@ -438,7 +377,7 @@ namespace FWBlueprintPlugin.Services
                         backerOffset = 11.0;
                     }
 
-                    _deferredDimensions.Add(new PanelDimensionInfo
+                    _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                     {
                         BBox = backerBBox,
                         PanelType = "TopBackerDepth",
@@ -449,7 +388,7 @@ namespace FWBlueprintPlugin.Services
                         CustomHeightOffset = backerOffset
                     });
 
-                    _deferredDimensions.Add(new PanelDimensionInfo
+                    _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                     {
                         BBox = lidBBox,
                         PanelType = "TopLiftLidDepth",
@@ -462,7 +401,7 @@ namespace FWBlueprintPlugin.Services
                 }
             }
 
-            _deferredLeaders.Add(new PanelLeaderInfo
+            _workspace.DeferredLeaders.Add(new PanelLeaderInfo
             {
                 BBox = info.OverallBBox,
                 PanelType = panelType,
@@ -491,7 +430,7 @@ namespace FWBlueprintPlugin.Services
             {
                 string key = $"{panelType}_{i}";
                 double thickness = CalculateThickness(panels[i].Geometry);
-                _panelThicknesses[key] = thickness;
+                _workspace.PanelThicknesses[key] = thickness;
                 AssignPanelThickness(panels[i], thickness);
                 categoryThickness = thickness;
             }
@@ -531,7 +470,7 @@ namespace FWBlueprintPlugin.Services
 
                     var panelGuid = AddToLayer(panelFlat, panelsLayerIndex, panelType);
 
-                    _panelBounds.Add(panelBox);
+                    _workspace.PanelBounds.Add(panelBox);
                     categoryEntries.Add(new PanelCategoryEntry
                     {
                         BBox = panelBox,
@@ -599,7 +538,7 @@ namespace FWBlueprintPlugin.Services
 
             if (categoryBounds.Count > 1)
             {
-                _deferredDimensions.Add(new PanelDimensionInfo
+                _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                 {
                     BBox = groupBBox,
                     PanelType = panelType,
@@ -614,7 +553,7 @@ namespace FWBlueprintPlugin.Services
                 for (int i = 0; i < categoryEntries.Count; i++)
                 {
                     var entry = categoryEntries[i];
-                    _deferredDimensions.Add(new PanelDimensionInfo
+                    _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                     {
                         BBox = entry.BBox,
                         PanelType = $"{panelType}: {entry.Letter}",
@@ -641,7 +580,7 @@ namespace FWBlueprintPlugin.Services
 
                 if (allSameHeight)
                 {
-                    _deferredDimensions.Add(new PanelDimensionInfo
+                    _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                     {
                         BBox = groupBBox,
                         PanelType = panelType,
@@ -653,7 +592,7 @@ namespace FWBlueprintPlugin.Services
                 }
                 else
                 {
-                    _deferredDimensions.Add(new PanelDimensionInfo
+                    _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                     {
                         BBox = categoryBounds[0],
                         PanelType = $"{panelType}: {categoryEntries[0].Letter}",
@@ -665,7 +604,7 @@ namespace FWBlueprintPlugin.Services
 
                     foreach (int i in differentHeightIndices)
                     {
-                        _deferredDimensions.Add(new PanelDimensionInfo
+                        _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                         {
                             BBox = categoryBounds[i],
                             PanelType = $"{panelType}: {categoryEntries[i].Letter}",
@@ -679,7 +618,7 @@ namespace FWBlueprintPlugin.Services
             }
             else if (categoryBounds.Count == 1)
             {
-                _deferredDimensions.Add(new PanelDimensionInfo
+                _workspace.DeferredDimensions.Add(new PanelDimensionInfo
                 {
                     BBox = categoryBounds[0],
                     PanelType = $"{panelType}: {categoryEntries[0].Letter}",
@@ -694,7 +633,7 @@ namespace FWBlueprintPlugin.Services
             if (categoryBounds.Count > 0)
             {
                 var rightmostBox = categoryBounds[categoryBounds.Count - 1];
-                _deferredLeaders.Add(new PanelLeaderInfo
+                _workspace.DeferredLeaders.Add(new PanelLeaderInfo
                 {
                     BBox = rightmostBox,
                     PanelType = panelType,
@@ -788,7 +727,7 @@ namespace FWBlueprintPlugin.Services
                     panelBox = panelInfo.Geometry.GetBoundingBox(true);
 
                     var panelGuid = AddToLayer(panelInfo.Geometry, panelsLayerIndex, panelType);
-                    _panelBounds.Add(panelBox);
+                    _workspace.PanelBounds.Add(panelBox);
 
                     entries.Add(new PanelCategoryEntry
                     {
@@ -1043,12 +982,12 @@ namespace FWBlueprintPlugin.Services
                     }
                 }
 
-                if (_panelBounds.Count > 0)
+                if (_workspace.PanelBounds.Count > 0)
                 {
-                    BoundingBox overallBBox = _panelBounds[0];
-                    for (int i = 1; i < _panelBounds.Count; i++)
+                    BoundingBox overallBBox = _workspace.PanelBounds[0];
+                    for (int i = 1; i < _workspace.PanelBounds.Count; i++)
                     {
-                        overallBBox.Union(_panelBounds[i]);
+                        overallBBox.Union(_workspace.PanelBounds[i]);
                     }
 
                     double xPadding = (overallBBox.Max.X - overallBBox.Min.X) * 0.1;

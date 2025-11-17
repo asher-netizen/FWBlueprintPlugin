@@ -1,3 +1,4 @@
+using FWBlueprintPlugin.Infrastructure.Logging;
 using FWBlueprintPlugin.Models.Dimensioning;
 using Rhino;
 using Rhino.DocObjects;
@@ -65,9 +66,9 @@ namespace FWBlueprintPlugin.Services.Dimensioning
 
             if (dimStyle == null)
             {
-                if (LoggingOptions.EnableVerboseLogging)
+                if (LoggingService.IsEnabled(LogLevel.Debug))
                 {
-                    RhinoApp.WriteLine("[Blueprint Styles][PanelDimensioningService.AddPanelDimensions] Unable to resolve a dimension style; aborting dimension creation.");
+                    LoggingService.Debug("[Blueprint Styles][PanelDimensioningService.AddPanelDimensions] Unable to resolve a dimension style; aborting dimension creation.");
                 }
                 return;
             }
@@ -239,9 +240,9 @@ namespace FWBlueprintPlugin.Services.Dimensioning
             DimensionStyle dimStyle = GetBlueprintDimStyle("AddPanelLeader");
             if (dimStyle == null)
             {
-                if (LoggingOptions.EnableVerboseLogging)
+                if (LoggingService.IsEnabled(LogLevel.Debug))
                 {
-                    RhinoApp.WriteLine("[Blueprint Styles][PanelDimensioningService.AddPanelLeader] Unable to resolve a dimension style; leader text will use defaults.");
+                    LoggingService.Debug("[Blueprint Styles][PanelDimensioningService.AddPanelLeader] Unable to resolve a dimension style; leader text will use defaults.");
                 }
                 return;
             }

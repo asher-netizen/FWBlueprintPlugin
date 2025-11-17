@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.Linq;
+using FWBlueprintPlugin.Infrastructure.Logging;
 using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
@@ -12,7 +13,7 @@ using FWBlueprintPlugin.Models.Dimensioning;
 using FWBlueprintPlugin.Models.Extraction;
 using static FWBlueprintPlugin.Services.Dimensioning.DimensionFormatting;
 
-namespace FWBlueprintPlugin.Services.Phase3
+namespace FWBlueprintPlugin.Services.Extraction
 {
     /// <summary>
     /// Coordinates Phase 3 panel extraction, edge feature detection, and downstream dimensioning.
@@ -431,9 +432,9 @@ namespace FWBlueprintPlugin.Services.Phase3
                 var dimStyle = ResolveBlueprintStyle(doc, "AddChordDimensions");
                 if (dimStyle == null)
                 {
-                    if (LoggingOptions.EnableVerboseLogging)
+                    if (LoggingService.IsEnabled(LogLevel.Debug))
                     {
-                        RhinoApp.WriteLine("[Blueprint Styles][Phase3ExtractionService.AddChordDimensions] Unable to resolve blueprint dimension style; skipping chord dimensions.");
+                        LoggingService.Debug("[Blueprint Styles][Phase3ExtractionService.AddChordDimensions] Unable to resolve blueprint dimension style; skipping chord dimensions.");
                     }
                     continue;
                 }
@@ -813,9 +814,9 @@ namespace FWBlueprintPlugin.Services.Phase3
 
                 if (nearEdges >= 2)
                 {
-                    if (LoggingOptions.EnableVerboseLogging)
+                    if (LoggingService.IsEnabled(LogLevel.Debug))
                     {
-                        RhinoApp.WriteLine("[Interior Cord Hole] Skipping dimensions because the feature is within 2.0625\" of two edges.");
+                        LoggingService.Debug("[Interior Cord Hole] Skipping dimensions because the feature is within 2.0625\" of two edges.");
                     }
                     return;
                 }
@@ -965,9 +966,9 @@ namespace FWBlueprintPlugin.Services.Phase3
             double rightGap = panelBBox.Max.X - slotMaxX;
             double bottomGap = slotMinY - panelBBox.Min.Y;
             double topGap = panelBBox.Max.Y - slotMaxY;
-            if (LoggingOptions.EnableVerboseLogging)
+            if (LoggingService.IsEnabled(LogLevel.Debug))
             {
-                RhinoApp.WriteLine($"[SlotHeight] leftGap={leftGap:F3}, rightGap={rightGap:F3}, topGap={topGap:F3}, bottomGap={bottomGap:F3}");
+                LoggingService.Debug($"[SlotHeight] leftGap={leftGap:F3}, rightGap={rightGap:F3}, topGap={topGap:F3}, bottomGap={bottomGap:F3}");
             }
 
             bool fromLeft = leftGap <= rightGap;
@@ -1036,9 +1037,9 @@ namespace FWBlueprintPlugin.Services.Phase3
             double slotAnchorX = nearestLeftEdge ? slotMaxX : slotMinX;
             double dimensionX = slotAnchorX + (nearestLeftEdge ? 3.0 : -3.0);
             double heightLabelOffset = widthOffsetBelow ? 3.0 : -3.0;
-            if (LoggingOptions.EnableVerboseLogging)
+            if (LoggingService.IsEnabled(LogLevel.Debug))
             {
-                RhinoApp.WriteLine($"[SlotHeight] nearestLeftEdge={nearestLeftEdge}, widthOffset={widthOffset:F3}, widthOffsetBelow={widthOffsetBelow}, slotAnchorX={slotAnchorX:F3}, dimensionX={dimensionX:F3}, labelOffset={heightLabelOffset:F3}");
+                LoggingService.Debug($"[SlotHeight] nearestLeftEdge={nearestLeftEdge}, widthOffset={widthOffset:F3}, widthOffsetBelow={widthOffsetBelow}, slotAnchorX={slotAnchorX:F3}, dimensionX={dimensionX:F3}, labelOffset={heightLabelOffset:F3}");
             }
 
             var heightStart = new Point3d(slotAnchorX, slotMinY, 0);
@@ -1125,19 +1126,19 @@ namespace FWBlueprintPlugin.Services.Phase3
         {
             if (dimension == null)
             {
-                if (LoggingOptions.EnableVerboseLogging)
+                if (LoggingService.IsEnabled(LogLevel.Debug))
                 {
-                    RhinoApp.WriteLine($"[Blueprint Styles][{context}] Dimension instance is null; skipping add.");
+                    LoggingService.Debug($"[Blueprint Styles][{context}] Dimension instance is null; skipping add.");
                 }
                 return;
             }
 
-            if (LoggingOptions.EnableVerboseLogging)
+            if (LoggingService.IsEnabled(LogLevel.Debug))
             {
                 var style = doc?.DimStyles.FindId(dimension.DimensionStyleId);
                 var textPoint2d = dimension.TextPosition;
                 var textPoint = new Point3d(textPoint2d.X, textPoint2d.Y, 0);
-                RhinoApp.WriteLine(
+                LoggingService.Debug(
                     $"[Blueprint Styles][{context}] Adding dimension style='{style?.Name ?? "(unknown)"}' (Id={dimension.DimensionStyleId}) layer={attr?.LayerIndex ?? -1} textPt={FormatPoint(textPoint)} value='{dimension.PlainText}'");
             }
 

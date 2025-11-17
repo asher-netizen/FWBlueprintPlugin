@@ -6,7 +6,7 @@ using Rhino.Geometry;
 using FWBlueprintPlugin;
 using FWBlueprintPlugin.Models.Extraction;
 
-namespace FWBlueprintPlugin.Services.Phase3
+namespace FWBlueprintPlugin.Services.Extraction
 {
     /// <summary>
     /// Handles creation and maintenance of the Blueprint layer subtree for Phase 3 extraction.

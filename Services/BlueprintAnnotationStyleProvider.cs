@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using FWBlueprintPlugin.Infrastructure.Logging;
 using Rhino;
 using Rhino.DocObjects;
 using Rhino.FileIO;
@@ -42,7 +43,7 @@ namespace FWBlueprintPlugin.Services
                 return;
             }
 
-            bool verbose = LoggingOptions.EnableVerboseLogging;
+            bool verbose = LoggingService.IsEnabled(LogLevel.Debug);
 
             if (verbose)
             {

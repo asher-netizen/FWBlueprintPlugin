@@ -1,4 +1,5 @@
 using System;
+using FWBlueprintPlugin.Infrastructure.Logging;
 using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
@@ -9,7 +10,7 @@ namespace FWBlueprintPlugin.Services
     {
         public static DimensionStyle ResolveDefaultStyle(RhinoDoc doc, string caller)
         {
-            bool verbose = LoggingOptions.EnableVerboseLogging;
+            bool verbose = LoggingService.IsEnabled(LogLevel.Debug);
 
             if (doc == null)
             {
@@ -33,24 +34,24 @@ namespace FWBlueprintPlugin.Services
             }
 
             var fallback = doc.DimStyles.Current ?? (doc.DimStyles.Count > 0 ? doc.DimStyles[0] : null);
-            RhinoApp.WriteLine($"[Blueprint Styles][{caller}] '{BlueprintAnnotationStyles.Default}' missing. Fallback -> '{fallback?.Name ?? "(null)"}'.");
+            LoggingService.Warn($"[Blueprint Styles][{caller}] '{BlueprintAnnotationStyles.Default}' missing. Fallback -> '{fallback?.Name ?? "(null)"}'.");
             return fallback;
         }
 
         public static void LogDimensionRequest(string caller, string dimensionType, DimensionStyle style, Point3d start, Point3d end, Point3d dimLinePoint, int layerIndex)
         {
-            if (LoggingOptions.EnableVerboseLogging)
+            if (LoggingService.IsEnabled(LogLevel.Debug))
             {
-                RhinoApp.WriteLine(
+                LoggingService.Debug(
                     $"[Blueprint Styles][{caller}] Creating {dimensionType} dimension | layer={layerIndex} | style='{style?.Name ?? "(null)"}' (Id={style?.Id ?? Guid.Empty}) | start={FormatPoint(start)} end={FormatPoint(end)} dimLine={FormatPoint(dimLinePoint)}");
             }
         }
 
         public static void LogStyleImport(string message, bool always = false)
         {
-            if (always || LoggingOptions.EnableVerboseLogging)
+            if (always || LoggingService.IsEnabled(LogLevel.Debug))
             {
-                RhinoApp.WriteLine($"[Blueprint Styles][Import] {message}");
+                LoggingService.Debug($"[Blueprint Styles][Import] {message}");
             }
         }
 
